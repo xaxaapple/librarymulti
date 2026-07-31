@@ -187,3 +187,121 @@ canvas#app-canvas {
   height: 100%;
   display: none;
 }
+
+/* ---------- Connection status ---------- */
+#connection-status {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #8fb37a;
+  min-height: 14px;
+}
+
+#hint-mobile {
+  display: none;
+}
+
+/* ---------- Mobile touch controls (hidden by default) ---------- */
+#joystick-zone {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 45%;
+  height: 45%;
+  display: none;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+#joystick-base {
+  position: absolute;
+  left: 40px;
+  bottom: 40px;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: rgba(240, 230, 200, 0.12);
+  border: 2px solid rgba(240, 230, 200, 0.35);
+}
+
+#joystick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 54px;
+  height: 54px;
+  margin-left: -27px;
+  margin-top: -27px;
+  border-radius: 50%;
+  background: rgba(232, 200, 135, 0.55);
+  border: 2px solid rgba(232, 200, 135, 0.85);
+  transition: none;
+}
+
+#look-zone {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+#mobile-exit-btn {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  width: 38px;
+  height: 38px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 8, 5, 0.55);
+  border: 1px solid rgba(168, 132, 47, 0.5);
+  border-radius: 50%;
+  color: #f0e6c8;
+  font-size: 16px;
+  pointer-events: auto;
+  z-index: 30;
+}
+
+/* ---------- Mobile layout adjustments ---------- */
+body.is-mobile #hint-desktop { display: none; }
+body.is-mobile #hint-mobile { display: block; }
+body.is-mobile #joystick-zone { display: block; }
+body.is-mobile #look-zone { display: block; z-index: 5; }
+body.is-mobile #mobile-exit-btn { display: flex; }
+body.is-mobile #blocker-msg { display: none !important; }
+
+body.is-mobile #start-box {
+  width: 92vw;
+  padding: 24px 20px;
+}
+
+body.is-mobile #start-box h1 {
+  font-size: 26px;
+}
+
+body.is-mobile #timer-box {
+  top: 10px;
+  font-size: 13px;
+  padding: 5px 12px;
+}
+
+body.is-mobile #players-box {
+  top: 10px;
+  right: 60px;
+  font-size: 11px;
+  padding: 5px 10px;
+}
+
+@media (max-width: 480px) {
+  #start-box h1 { font-size: 24px; }
+  #joystick-base { left: 24px; bottom: 30px; width: 100px; height: 100px; }
+  #joystick-knob { width: 46px; height: 46px; margin-left: -23px; margin-top: -23px; }
+}
+
+@media (orientation: portrait) and (max-width: 900px) {
+  #start-box .hint { font-size: 11px; }
+}

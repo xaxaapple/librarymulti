@@ -2,13 +2,13 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>3D Библиотека — FPS Мультиплеер</title>
 <link rel="stylesheet" href="styles.css">
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
 <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/mqtt@5.3.4/dist/mqtt.min.js"></script>
 </head>
 <body>
 
@@ -18,8 +18,10 @@
     <p>Введите ваш никнейм, чтобы войти в 3D-мир</p>
     <input id="nickname-input" type="text" maxlength="16" placeholder="Ваш никнейм" autocomplete="off">
     <button id="start-btn">Войти в библиотеку</button>
-    <p class="hint">Управление: WASD — движение, мышь — обзор, ESC — выход из режима мыши</p>
+    <p class="hint" id="hint-desktop">Управление: WASD — движение, мышь — обзор, ESC — выход из режима мыши</p>
+    <p class="hint" id="hint-mobile">Управление: джойстик слева — движение, свайп справа — обзор</p>
     <p id="start-error"></p>
+    <p id="connection-status"></p>
   </div>
 </div>
 
@@ -30,6 +32,14 @@
     <span id="timer-value">00:00</span>
   </div>
   <div id="players-box">Игроков онлайн: <span id="players-count">1</span></div>
+
+  <div id="joystick-zone">
+    <div id="joystick-base">
+      <div id="joystick-knob"></div>
+    </div>
+  </div>
+  <div id="look-zone"></div>
+  <div id="mobile-exit-btn">✕</div>
 </div>
 
 <canvas id="glitch-canvas"></canvas>

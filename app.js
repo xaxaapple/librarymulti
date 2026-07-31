@@ -1,26 +1,33 @@
 /* ==========================================================
-   3D LIBRARY — FPS + PeerJS MULTIPLAYER + GLITCH TIMELINE
+   3D LIBRARY — FPS + REAL INTERNET MULTIPLAYER (PeerJS + MQTT signaling)
+   + DESKTOP & MOBILE CONTROLS
    ========================================================== */
 
 /* ---------------------- Global State ---------------------- */
 
-let scene, camera, renderer, controls;
+let scene, camera, renderer;
 let clock = new THREE.Clock();
-let raycaster = new THREE.Raycaster();
+
+let yawObject, pitchObject;
+let playerHeight = 1.7;
+let worldHalfSize = 14;
 
 const moveState = { forward: false, backward: false, left: false, right: false };
-const velocity = new THREE.Vector3();
-const direction = new THREE.Vector3();
+let joystickVector = { x: 0, z: 0 };
+let pointerLocked = false;
 
-let playerHeight = 1.7;
-let playerRadius = 0.35;
-let worldHalfSize = 14;
+let isMobile = false;
 
 let nickname = "";
 let myPeer = null;
 let myPeerId = null;
 let connections = {};
 let remotePlayers = {};
+let lastSeenPeers = {};
+
+let mqttClient = null;
+const MQTT_BROKER_URL = 'wss://broker.emqx.io:8084/mqtt';
+const PRESENCE_TOPIC = 'threeDLibraryFPS/presence/v1';
 
 let animatedObjects = [];
 let lights = {};
@@ -42,55 +49,72 @@ const startOverlay = document.getElementById('start-overlay');
 const nicknameInput = document.getElementById('nickname-input');
 const startBtn = document.getElementById('start-btn');
 const startError = document.getElementById('start-error');
+const connectionStatus = document.getElementById('connection-status');
 const hud = document.getElementById('hud');
 const timerValue = document.getElementById('timer-value');
 const playersCount = document.getElementById('players-count');
 const blockerMsg = document.getElementById('blocker-msg');
 const glitchCanvas = document.getElementById('glitch-canvas');
 const glitchCtx = glitchCanvas.getContext('2d');
+const joystickZone = document.getElementById('joystick-zone');
+const joystickBase = document.getElementById('joystick-base');
+const joystickKnob = document.getElementById('joystick-knob');
+const lookZone = document.getElementById('look-zone');
+const mobileExitBtn = document.getElementById('mobile-exit-btn');
+
+/* ==========================================================
+   DEVICE DETECTION
+   ========================================================== */
+
+function detectMobile() {
+  const uaMobile = /Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(navigator.userAgent);
+  const touchCapable = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+  const narrow = window.innerWidth <= 900;
+  return uaMobile || (touchCapable && narrow);
+}
 
 /* ==========================================================
    INITIALIZATION
    ========================================================== */
 
 function initScene() {
+  isMobile = detectMobile();
+  if (isMobile) document.body.classList.add('is-mobile');
+
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0b0906);
   scene.fog = new THREE.FogExp2(0x0b0906, 0.028);
 
   camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 200);
-  camera.position.set(0, playerHeight, 6);
 
-  renderer = new THREE.WebGLRenderer({ antialias: true });
+  pitchObject = new THREE.Object3D();
+  pitchObject.add(camera);
+
+  yawObject = new THREE.Object3D();
+  yawObject.position.set(0, playerHeight, 6);
+  yawObject.add(pitchObject);
+  scene.add(yawObject);
+
+  renderer = new THREE.WebGLRenderer({ antialias: !isMobile });
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputEncoding = THREE.sRGBEncoding;
   renderer.domElement.id = 'app-canvas';
   document.body.appendChild(renderer.domElement);
 
-  controls = new THREE.PointerLockControls(camera, renderer.domElement);
-  scene.add(controls.getObject());
-
   buildLighting();
   buildRoom();
   buildShelvesAndBooks();
 
   window.addEventListener('resize', onWindowResize);
-  document.addEventListener('keydown', onKeyDown);
-  document.addEventListener('keyup', onKeyUp);
 
-  renderer.domElement.addEventListener('click', () => {
-    if (gameStarted) controls.lock();
-  });
-
-  controls.addEventListener('lock', () => { blockerMsg.style.display = 'none'; });
-  controls.addEventListener('unlock', () => {
-    if (gameStarted) blockerMsg.style.display = 'flex';
-  });
-
-  blockerMsg.addEventListener('click', () => controls.lock());
+  if (isMobile) {
+    setupTouchControls();
+  } else {
+    setupDesktopControls();
+  }
 }
 
 function onWindowResize() {
@@ -99,6 +123,176 @@ function onWindowResize() {
   renderer.setSize(window.innerWidth, window.innerHeight);
   glitchCanvas.width = window.innerWidth;
   glitchCanvas.height = window.innerHeight;
+}
+
+/* ==========================================================
+   DESKTOP CONTROLS: KEYBOARD + POINTER LOCK MOUSE LOOK
+   ========================================================== */
+
+function setupDesktopControls() {
+  document.addEventListener('keydown', onKeyDown);
+  document.addEventListener('keyup', onKeyUp);
+
+  renderer.domElement.addEventListener('click', () => {
+    if (gameStarted && !pointerLocked) {
+      renderer.domElement.requestPointerLock();
+    }
+  });
+
+  document.addEventListener('pointerlockchange', () => {
+    pointerLocked = document.pointerLockElement === renderer.domElement;
+    blockerMsg.style.display = (gameStarted && !pointerLocked) ? 'flex' : 'none';
+  });
+
+  document.addEventListener('mousemove', onMouseMove);
+
+  blockerMsg.addEventListener('click', () => {
+    renderer.domElement.requestPointerLock();
+  });
+}
+
+function onMouseMove(e) {
+  if (!pointerLocked) return;
+  const sensitivity = 0.0022;
+  yawObject.rotation.y -= e.movementX * sensitivity;
+  pitchObject.rotation.x -= e.movementY * sensitivity;
+  pitchObject.rotation.x = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, pitchObject.rotation.x));
+}
+
+function onKeyDown(e) {
+  switch (e.code) {
+    case 'KeyW': case 'ArrowUp': moveState.forward = true; break;
+    case 'KeyS': case 'ArrowDown': moveState.backward = true; break;
+    case 'KeyA': case 'ArrowLeft': moveState.left = true; break;
+    case 'KeyD': case 'ArrowRight': moveState.right = true; break;
+  }
+}
+
+function onKeyUp(e) {
+  switch (e.code) {
+    case 'KeyW': case 'ArrowUp': moveState.forward = false; break;
+    case 'KeyS': case 'ArrowDown': moveState.backward = false; break;
+    case 'KeyA': case 'ArrowLeft': moveState.left = false; break;
+    case 'KeyD': case 'ArrowRight': moveState.right = false; break;
+  }
+}
+
+/* ==========================================================
+   MOBILE CONTROLS: VIRTUAL JOYSTICK + TOUCH LOOK
+   ========================================================== */
+
+let joystickActive = false;
+let joystickTouchId = null;
+let joystickOrigin = { x: 0, y: 0 };
+const JOYSTICK_MAX_RADIUS = 50;
+
+let lookTouchId = null;
+let lastLookX = 0;
+let lastLookY = 0;
+
+function setupTouchControls() {
+  joystickZone.addEventListener('touchstart', onJoystickStart, { passive: false });
+  joystickZone.addEventListener('touchmove', onJoystickMove, { passive: false });
+  joystickZone.addEventListener('touchend', onJoystickEnd, { passive: false });
+  joystickZone.addEventListener('touchcancel', onJoystickEnd, { passive: false });
+
+  lookZone.addEventListener('touchstart', onLookStart, { passive: false });
+  lookZone.addEventListener('touchmove', onLookMove, { passive: false });
+  lookZone.addEventListener('touchend', onLookEnd, { passive: false });
+  lookZone.addEventListener('touchcancel', onLookEnd, { passive: false });
+
+  mobileExitBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    exitToMenu();
+  });
+}
+
+function onJoystickStart(e) {
+  e.preventDefault();
+  if (joystickActive) return;
+  const touch = e.changedTouches[0];
+  joystickActive = true;
+  joystickTouchId = touch.identifier;
+  const rect = joystickBase.getBoundingClientRect();
+  joystickOrigin.x = rect.left + rect.width / 2;
+  joystickOrigin.y = rect.top + rect.height / 2;
+  updateJoystickKnob(touch.clientX, touch.clientY);
+}
+
+function onJoystickMove(e) {
+  e.preventDefault();
+  for (const touch of e.changedTouches) {
+    if (touch.identifier === joystickTouchId) {
+      updateJoystickKnob(touch.clientX, touch.clientY);
+    }
+  }
+}
+
+function onJoystickEnd(e) {
+  e.preventDefault();
+  for (const touch of e.changedTouches) {
+    if (touch.identifier === joystickTouchId) {
+      joystickActive = false;
+      joystickTouchId = null;
+      joystickVector.x = 0;
+      joystickVector.z = 0;
+      joystickKnob.style.transform = 'translate(0px, 0px)';
+    }
+  }
+}
+
+function updateJoystickKnob(clientX, clientY) {
+  let dx = clientX - joystickOrigin.x;
+  let dy = clientY - joystickOrigin.y;
+  const dist = Math.min(JOYSTICK_MAX_RADIUS, Math.hypot(dx, dy));
+  const angle = Math.atan2(dy, dx);
+  const kx = Math.cos(angle) * dist;
+  const ky = Math.sin(angle) * dist;
+  joystickKnob.style.transform = `translate(${kx}px, ${ky}px)`;
+
+  joystickVector.x = kx / JOYSTICK_MAX_RADIUS;
+  joystickVector.z = -ky / JOYSTICK_MAX_RADIUS;
+}
+
+function onLookStart(e) {
+  e.preventDefault();
+  if (lookTouchId !== null) return;
+  const touch = e.changedTouches[0];
+  if (joystickActive && touch.identifier === joystickTouchId) return;
+  lookTouchId = touch.identifier;
+  lastLookX = touch.clientX;
+  lastLookY = touch.clientY;
+}
+
+function onLookMove(e) {
+  e.preventDefault();
+  for (const touch of e.changedTouches) {
+    if (touch.identifier === lookTouchId) {
+      const dx = touch.clientX - lastLookX;
+      const dy = touch.clientY - lastLookY;
+      lastLookX = touch.clientX;
+      lastLookY = touch.clientY;
+      const sensitivity = 0.0042;
+      yawObject.rotation.y -= dx * sensitivity;
+      pitchObject.rotation.x -= dy * sensitivity;
+      pitchObject.rotation.x = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, pitchObject.rotation.x));
+    }
+  }
+}
+
+function onLookEnd(e) {
+  e.preventDefault();
+  for (const touch of e.changedTouches) {
+    if (touch.identifier === lookTouchId) {
+      lookTouchId = null;
+    }
+  }
+}
+
+function exitToMenu() {
+  gameStarted = false;
+  hud.style.display = 'none';
+  startOverlay.style.display = 'flex';
 }
 
 /* ==========================================================
@@ -197,8 +391,8 @@ function buildLighting() {
   positions.forEach((p, idx) => {
     const pl = new THREE.PointLight(0xffcf8a, 1.1, 16, 2);
     pl.position.set(p[0], p[1], p[2]);
-    pl.castShadow = idx < 3;
-    pl.shadow.mapSize.set(1024, 1024);
+    pl.castShadow = idx < 3 && !isMobile;
+    pl.shadow.mapSize.set(isMobile ? 512 : 1024, isMobile ? 512 : 1024);
     pl.shadow.bias = -0.002;
     scene.add(pl);
 
@@ -407,60 +601,52 @@ function buildShelvesAndBooks() {
 }
 
 /* ==========================================================
-   MOVEMENT & COLLISION
+   MOVEMENT (UNIFIED: KEYBOARD + JOYSTICK)
    ========================================================== */
 
-function onKeyDown(e) {
-  switch (e.code) {
-    case 'KeyW': case 'ArrowUp': moveState.forward = true; break;
-    case 'KeyS': case 'ArrowDown': moveState.backward = true; break;
-    case 'KeyA': case 'ArrowLeft': moveState.left = true; break;
-    case 'KeyD': case 'ArrowRight': moveState.right = true; break;
-  }
-}
-
-function onKeyUp(e) {
-  switch (e.code) {
-    case 'KeyW': case 'ArrowUp': moveState.forward = false; break;
-    case 'KeyS': case 'ArrowDown': moveState.backward = false; break;
-    case 'KeyA': case 'ArrowLeft': moveState.left = false; break;
-    case 'KeyD': case 'ArrowRight': moveState.right = false; break;
-  }
+function getMoveInput() {
+  let x = joystickVector.x;
+  let z = joystickVector.z;
+  if (moveState.forward) z += 1;
+  if (moveState.backward) z -= 1;
+  if (moveState.right) x += 1;
+  if (moveState.left) x -= 1;
+  const len = Math.hypot(x, z);
+  if (len > 1) { x /= len; z /= len; }
+  return { x, z };
 }
 
 function updateMovement(delta) {
-  const speed = 6.0;
-  velocity.x -= velocity.x * 10.0 * delta;
-  velocity.z -= velocity.z * 10.0 * delta;
+  const input = getMoveInput();
+  if (input.x === 0 && input.z === 0) return;
 
-  direction.z = Number(moveState.forward) - Number(moveState.backward);
-  direction.x = Number(moveState.right) - Number(moveState.left);
-  direction.normalize();
+  const speed = 4.2;
+  const yaw = yawObject.rotation.y;
 
-  if (moveState.forward || moveState.backward) velocity.z -= direction.z * speed * delta * 10;
-  if (moveState.left || moveState.right) velocity.x -= direction.x * speed * delta * 10;
+  const forwardX = -Math.sin(yaw);
+  const forwardZ = -Math.cos(yaw);
+  const rightX = Math.cos(yaw);
+  const rightZ = -Math.sin(yaw);
 
-  const obj = controls.getObject();
-  const prevX = obj.position.x;
-  const prevZ = obj.position.z;
+  const moveX = (forwardX * input.z + rightX * input.x) * speed * delta;
+  const moveZ = (forwardZ * input.z + rightZ * input.x) * speed * delta;
 
-  controls.moveRight(-velocity.x * delta);
-  controls.moveForward(-velocity.z * delta);
+  yawObject.position.x += moveX;
+  yawObject.position.z += moveZ;
 
   const limit = worldHalfSize - 0.8;
-  if (obj.position.x > limit) obj.position.x = limit;
-  if (obj.position.x < -limit) obj.position.x = -limit;
-  if (obj.position.z > limit) obj.position.z = limit;
-  if (obj.position.z < -limit) obj.position.z = -limit;
-
-  obj.position.y = playerHeight;
+  yawObject.position.x = Math.max(-limit, Math.min(limit, yawObject.position.x));
+  yawObject.position.z = Math.max(-limit, Math.min(limit, yawObject.position.z));
+  yawObject.position.y = playerHeight;
 }
 
 /* ==========================================================
-   PEERJS MULTIPLAYER
+   SIGNALING (MQTT over WebSocket, public broker — no backend needed)
    ========================================================== */
 
 function initMultiplayer() {
+  connectionStatus.textContent = 'Подключение к серверу...';
+
   myPeer = new Peer(undefined, {
     host: '0.peerjs.com',
     port: 443,
@@ -470,7 +656,7 @@ function initMultiplayer() {
 
   myPeer.on('open', (id) => {
     myPeerId = id;
-    announcePresence();
+    connectSignaling();
   });
 
   myPeer.on('connection', (conn) => {
@@ -482,26 +668,81 @@ function initMultiplayer() {
   });
 }
 
-function announcePresence() {
-  const registryKey = 'library_peers_registry';
-  let registry = [];
+function connectSignaling() {
   try {
-    registry = JSON.parse(localStorage.getItem(registryKey) || '[]');
-  } catch (e) { registry = []; }
+    mqttClient = mqtt.connect(MQTT_BROKER_URL, {
+      clientId: 'lib3d_' + myPeerId + '_' + Math.floor(Math.random() * 10000),
+      clean: true,
+      reconnectPeriod: 3000,
+      connectTimeout: 8000
+    });
 
-  registry = registry.filter(id => id !== myPeerId);
+    mqttClient.on('connect', () => {
+      connectionStatus.textContent = 'Подключено к сети. Ваш ID: ' + myPeerId.substring(0, 8);
+      mqttClient.subscribe(PRESENCE_TOPIC);
+      publishPresence();
+      setInterval(publishPresence, 3000);
+      setInterval(prunePeers, 4000);
+    });
 
-  registry.forEach(peerId => {
-    try {
-      const conn = myPeer.connect(peerId, { reliable: true });
-      setupConnection(conn);
-    } catch (e) { /* ignore unreachable peers */ }
-  });
+    mqttClient.on('message', (topic, payload) => {
+      if (topic !== PRESENCE_TOPIC) return;
+      try {
+        const msg = JSON.parse(payload.toString());
+        handlePresenceMessage(msg);
+      } catch (e) { /* ignore malformed */ }
+    });
 
-  registry.push(myPeerId);
-  registry = registry.slice(-20);
-  localStorage.setItem(registryKey, JSON.stringify(registry));
+    mqttClient.on('error', (err) => {
+      console.warn('MQTT signaling error:', err);
+      connectionStatus.textContent = 'Ошибка подключения к серверу сигнализации';
+    });
+  } catch (e) {
+    console.warn('MQTT unavailable:', e);
+    connectionStatus.textContent = 'Мультиплеер недоступен (сеть заблокирована)';
+  }
 }
+
+function publishPresence() {
+  if (!mqttClient || !mqttClient.connected || !myPeerId) return;
+  const payload = JSON.stringify({ peerId: myPeerId, nickname: nickname, ts: Date.now() });
+  mqttClient.publish(PRESENCE_TOPIC, payload);
+}
+
+function handlePresenceMessage(msg) {
+  if (!msg.peerId || msg.peerId === myPeerId) return;
+
+  lastSeenPeers[msg.peerId] = Date.now();
+
+  if (!connections[msg.peerId]) {
+    if (myPeerId < msg.peerId) {
+      const conn = myPeer.connect(msg.peerId, { reliable: true, metadata: { nickname: nickname } });
+      setupConnection(conn);
+    }
+  }
+
+  ensureRemotePlayer(msg.peerId, msg.nickname);
+  updatePlayersCount();
+}
+
+function prunePeers() {
+  const now = Date.now();
+  Object.keys(lastSeenPeers).forEach(peerId => {
+    if (now - lastSeenPeers[peerId] > 12000) {
+      delete lastSeenPeers[peerId];
+      removeRemotePlayer(peerId);
+      if (connections[peerId]) {
+        try { connections[peerId].close(); } catch (e) {}
+        delete connections[peerId];
+      }
+      updatePlayersCount();
+    }
+  });
+}
+
+/* ==========================================================
+   PEERJS DATA CHANNELS
+   ========================================================== */
 
 function setupConnection(conn) {
   connections[conn.peer] = conn;
@@ -564,7 +805,12 @@ function makeNicknameSprite(text) {
 }
 
 function ensureRemotePlayer(peerId, nick) {
-  if (remotePlayers[peerId]) return;
+  if (remotePlayers[peerId]) {
+    if (nick && remotePlayers[peerId].nickname !== nick) {
+      remotePlayers[peerId].nickname = nick;
+    }
+    return;
+  }
 
   const group = new THREE.Group();
 
@@ -603,14 +849,13 @@ function removeRemotePlayer(peerId) {
 
 function broadcastPose() {
   if (!myPeer || !myPeerId) return;
-  const obj = controls.getObject();
   const payload = {
     type: 'pose',
     nickname: nickname,
-    x: obj.position.x,
-    y: obj.position.y,
-    z: obj.position.z,
-    rotY: camera.rotation.y
+    x: yawObject.position.x,
+    y: yawObject.position.y,
+    z: yawObject.position.z,
+    rotY: yawObject.rotation.y
   };
   Object.values(connections).forEach(conn => {
     if (conn.open) conn.send(payload);
@@ -701,7 +946,7 @@ function applyPhase2Effects(t) {
     }
   });
 
-  lights.points.forEach((entry, idx) => {
+  lights.points.forEach((entry) => {
     if (Math.random() < 0.01 * intensity) {
       const shiftedHue = Math.random();
       const c = new THREE.Color();
@@ -857,7 +1102,8 @@ function animate() {
   const t = clock.elapsedTime;
 
   if (gameStarted) {
-    if (controls.isLocked) {
+    const controlsActive = isMobile || pointerLocked;
+    if (controlsActive) {
       updateMovement(delta);
     }
     updateTimer(delta);
@@ -899,15 +1145,21 @@ function startGame() {
     return;
   }
   nickname = value;
+  startError.textContent = '';
 
   startOverlay.style.display = 'none';
   hud.style.display = 'block';
 
   gameStarted = true;
   clock.start();
-  controls.lock();
 
-  initMultiplayer();
+  if (!isMobile) {
+    renderer.domElement.requestPointerLock();
+  }
+
+  if (!myPeer) {
+    initMultiplayer();
+  }
 }
 
 startBtn.addEventListener('click', startGame);
