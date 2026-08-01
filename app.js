@@ -61,6 +61,7 @@ const joystickBase = document.getElementById('joystick-base');
 const joystickKnob = document.getElementById('joystick-knob');
 const lookZone = document.getElementById('look-zone');
 const mobileExitBtn = document.getElementById('mobile-exit-btn');
+const fullscreenBtn = document.getElementById('fullscreen-btn');
 
 /* ==========================================================
    DEVICE DETECTION
@@ -1135,6 +1136,54 @@ function broadcastPoseThrottled(delta) {
 }
 
 /* ==========================================================
+   FULLSCREEN CONTROL
+   ========================================================== */
+
+function isCurrentlyFullscreen() {
+  return !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
+}
+
+function requestFullscreenCompat(el) {
+  if (el.requestFullscreen) return el.requestFullscreen();
+  if (el.webkitRequestFullscreen) return el.webkitRequestFullscreen();
+  if (el.msRequestFullscreen) return el.msRequestFullscreen();
+  return Promise.reject(new Error('Fullscreen API unavailable'));
+}
+
+function exitFullscreenCompat() {
+  if (document.exitFullscreen) return document.exitFullscreen();
+  if (document.webkitExitFullscreen) return document.webkitExitFullscreen();
+  if (document.msExitFullscreen) return document.msExitFullscreen();
+  return Promise.reject(new Error('Fullscreen API unavailable'));
+}
+
+function updateFullscreenButtonVisibility() {
+  fullscreenBtn.classList.toggle('hidden', isCurrentlyFullscreen());
+}
+
+function toggleFullscreen() {
+  if (!isCurrentlyFullscreen()) {
+    requestFullscreenCompat(document.documentElement).catch(() => {});
+  } else {
+    exitFullscreenCompat().catch(() => {});
+  }
+}
+
+function setupFullscreenControl() {
+  fullscreenBtn.addEventListener('click', toggleFullscreen);
+  fullscreenBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    toggleFullscreen();
+  }, { passive: false });
+
+  document.addEventListener('fullscreenchange', updateFullscreenButtonVisibility);
+  document.addEventListener('webkitfullscreenchange', updateFullscreenButtonVisibility);
+  document.addEventListener('msfullscreenchange', updateFullscreenButtonVisibility);
+
+  updateFullscreenButtonVisibility();
+}
+
+/* ==========================================================
    START FLOW
    ========================================================== */
 
@@ -1172,5 +1221,6 @@ nicknameInput.addEventListener('keydown', (e) => {
    ========================================================== */
 
 initScene();
+setupFullscreenControl();
 onWindowResize();
 animate();

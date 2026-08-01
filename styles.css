@@ -188,6 +188,38 @@ canvas#app-canvas {
   display: none;
 }
 
+/* ---------- Fullscreen button ---------- */
+#fullscreen-btn {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 200;
+  padding: 8px 14px;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  background: rgba(20, 15, 10, 0.75);
+  border: 1px solid #a8842f;
+  color: #f0e6c8;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+#fullscreen-btn:hover {
+  background: rgba(40, 30, 15, 0.9);
+}
+
+#fullscreen-btn.hidden {
+  display: none;
+}
+
+body.is-mobile #fullscreen-btn {
+  top: 10px;
+  right: 10px;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
 /* ---------- Connection status ---------- */
 #connection-status {
   margin-top: 10px;
@@ -210,6 +242,7 @@ canvas#app-canvas {
   display: none;
   pointer-events: auto;
   touch-action: none;
+  z-index: 10;
 }
 
 #joystick-base {
