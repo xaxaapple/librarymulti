@@ -32,6 +32,8 @@ canvas#app-canvas {
   background:
     radial-gradient(ellipse at center, rgba(70, 50, 20, 0.35), rgba(5, 4, 10, 0.95) 70%),
     #0a0806;
+  overflow-y: auto;
+  padding: 20px 0;
 }
 
 #start-box {
@@ -109,6 +111,84 @@ canvas#app-canvas {
   min-height: 14px;
 }
 
+/* ---------- Connection status ---------- */
+#connection-status {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #8fb37a;
+  min-height: 14px;
+}
+
+/* ---------- Invite link box ---------- */
+#invite-box {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(168, 132, 47, 0.35);
+  text-align: left;
+}
+
+#invite-link-row {
+  display: flex;
+  gap: 6px;
+}
+
+#invite-link-input {
+  flex: 1;
+  padding: 8px 10px;
+  font-size: 11px;
+  background: #14100a;
+  border: 1px solid #6b5324;
+  color: #cbb98f;
+  border-radius: 4px;
+}
+
+#invite-copy-btn {
+  padding: 8px 12px;
+  font-size: 12px;
+  background: #3a2c14;
+  border: 1px solid #a8842f;
+  color: #f0e6c8;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#invite-copy-btn:hover {
+  background: #4a3a1c;
+}
+
+/* ---------- Fullscreen button ---------- */
+#fullscreen-btn {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 200;
+  padding: 8px 14px;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  background: rgba(20, 15, 10, 0.75);
+  border: 1px solid #a8842f;
+  color: #f0e6c8;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+#fullscreen-btn:hover {
+  background: rgba(40, 30, 15, 0.9);
+}
+
+#fullscreen-btn.hidden {
+  display: none;
+}
+
+body.is-mobile #fullscreen-btn {
+  top: 10px;
+  right: 10px;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
 /* ---------- HUD ---------- */
 #hud {
   position: fixed;
@@ -126,6 +206,24 @@ canvas#app-canvas {
   font-size: 18px;
   color: rgba(255, 255, 255, 0.75);
   text-shadow: 0 0 4px rgba(0,0,0,0.8);
+}
+
+#interact-prompt {
+  position: absolute;
+  top: 58%;
+  left: 50%;
+  transform: translate(-50%, 0);
+  background: rgba(10, 8, 5, 0.7);
+  border: 1px solid rgba(168, 132, 47, 0.6);
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-size: 14px;
+  display: none;
+  white-space: nowrap;
+}
+
+#interact-prompt.visible {
+  display: block;
 }
 
 #timer-box {
@@ -188,48 +286,133 @@ canvas#app-canvas {
   display: none;
 }
 
-/* ---------- Fullscreen button ---------- */
-#fullscreen-btn {
+/* ---------- TV screen overlay (video projection) ---------- */
+#tv-screen-overlay {
   position: fixed;
-  top: 16px;
-  right: 16px;
-  z-index: 200;
-  padding: 8px 14px;
-  font-size: 13px;
-  letter-spacing: 0.5px;
-  background: rgba(20, 15, 10, 0.75);
-  border: 1px solid #a8842f;
+  z-index: 12;
+  pointer-events: none;
+  display: none;
+  background: #000;
+  overflow: hidden;
+}
+
+#tv-screen-overlay iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+/* ---------- TV modal ---------- */
+#tv-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 4, 8, 0.75);
+}
+
+#tv-modal.visible {
+  display: flex;
+}
+
+#tv-modal-box {
+  width: 420px;
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 28px 26px;
+  background: rgba(18, 14, 9, 0.96);
+  border: 1px solid #6b5324;
+  border-radius: 6px;
+  text-align: left;
+}
+
+#tv-modal-box h2 {
+  color: #e8c887;
+  font-size: 22px;
+  margin-bottom: 8px;
+}
+
+#tv-modal-box .hint {
+  font-size: 12px;
+  color: #83795f;
+  margin-bottom: 14px;
+}
+
+#tv-url-input {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 14px;
+  background: #14100a;
+  border: 1px solid #6b5324;
   color: #f0e6c8;
   border-radius: 4px;
+  outline: none;
+  margin-bottom: 14px;
+}
+
+#tv-url-input:focus {
+  border-color: #e8c887;
+}
+
+#tv-modal-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+#tv-modal-buttons button {
+  flex: 1;
+  min-width: 100px;
+  padding: 9px 10px;
+  font-size: 12px;
+  border-radius: 4px;
   cursor: pointer;
-  font-family: inherit;
+  border: 1px solid #a8842f;
+  color: #f0e6c8;
+  background: #3a2c14;
 }
 
-#fullscreen-btn:hover {
-  background: rgba(40, 30, 15, 0.9);
+#tv-play-btn {
+  background: linear-gradient(180deg, #7a5c22, #543d13) !important;
 }
 
-#fullscreen-btn.hidden {
-  display: none;
+#tv-modal-buttons button:hover {
+  filter: brightness(1.2);
 }
 
-body.is-mobile #fullscreen-btn {
-  top: 10px;
-  right: 10px;
-  padding: 7px 10px;
+#tv-quality-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: #cbb98f;
+}
+
+#tv-quality-select {
+  flex: 1;
+  padding: 6px 8px;
+  background: #14100a;
+  border: 1px solid #6b5324;
+  color: #f0e6c8;
+  border-radius: 4px;
+}
+
+#tv-error {
   font-size: 12px;
-}
-
-/* ---------- Connection status ---------- */
-#connection-status {
-  margin-top: 10px;
-  font-size: 12px;
-  color: #8fb37a;
+  color: #e06666;
   min-height: 14px;
 }
 
-#hint-mobile {
-  display: none;
+#tv-note {
+  font-size: 11px;
+  color: #83795f;
+  margin-top: 6px;
 }
 
 /* ---------- Mobile touch controls (hidden by default) ---------- */
@@ -279,6 +462,45 @@ body.is-mobile #fullscreen-btn {
   display: none;
   pointer-events: auto;
   touch-action: none;
+  z-index: 5;
+}
+
+#jump-btn, #tv-interact-btn {
+  position: absolute;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  width: 74px;
+  height: 74px;
+  border-radius: 50%;
+  background: rgba(240, 230, 200, 0.14);
+  border: 2px solid rgba(240, 230, 200, 0.4);
+  color: #f0e6c8;
+  font-size: 11px;
+  font-family: inherit;
+  line-height: 1.3;
+  pointer-events: auto;
+  z-index: 15;
+}
+
+#jump-btn {
+  right: 30px;
+  bottom: 120px;
+  font-size: 18px;
+}
+
+#tv-interact-btn {
+  right: 120px;
+  bottom: 40px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+#tv-interact-btn.visible {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 #mobile-exit-btn {
@@ -303,9 +525,12 @@ body.is-mobile #fullscreen-btn {
 body.is-mobile #hint-desktop { display: none; }
 body.is-mobile #hint-mobile { display: block; }
 body.is-mobile #joystick-zone { display: block; }
-body.is-mobile #look-zone { display: block; z-index: 5; }
+body.is-mobile #look-zone { display: block; }
+body.is-mobile #jump-btn { display: flex; }
+body.is-mobile #tv-interact-btn { display: flex; }
 body.is-mobile #mobile-exit-btn { display: flex; }
 body.is-mobile #blocker-msg { display: none !important; }
+body.is-mobile #interact-prompt { display: none !important; }
 
 body.is-mobile #start-box {
   width: 92vw;
@@ -333,6 +558,8 @@ body.is-mobile #players-box {
   #start-box h1 { font-size: 24px; }
   #joystick-base { left: 24px; bottom: 30px; width: 100px; height: 100px; }
   #joystick-knob { width: 46px; height: 46px; margin-left: -23px; margin-top: -23px; }
+  #jump-btn { width: 62px; height: 62px; right: 20px; bottom: 100px; }
+  #tv-interact-btn { width: 62px; height: 62px; right: 92px; bottom: 30px; }
 }
 
 @media (orientation: portrait) and (max-width: 900px) {

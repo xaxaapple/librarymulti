@@ -1,12 +1,13 @@
 /* ==========================================================
-   3D LIBRARY — FPS + REAL INTERNET MULTIPLAYER (PeerJS + MQTT signaling)
-   + DESKTOP & MOBILE CONTROLS
+   3D LIBRARY — FPS + REAL INTERNET MULTIPLAYER (PeerJS + MQTT + invite link)
+   + DESKTOP & MOBILE CONTROLS + JUMP + SMART TV
    ========================================================== */
 
 /* ---------------------- Global State ---------------------- */
 
 let scene, camera, renderer;
 let clock = new THREE.Clock();
+let raycaster = new THREE.Raycaster();
 
 let yawObject, pitchObject;
 let playerHeight = 1.7;
@@ -15,8 +16,13 @@ let worldHalfSize = 14;
 const moveState = { forward: false, backward: false, left: false, right: false };
 let joystickVector = { x: 0, z: 0 };
 let pointerLocked = false;
-
 let isMobile = false;
+
+/* Jump / gravity */
+let verticalVelocity = 0;
+let isGrounded = true;
+const GRAVITY = -16;
+const JUMP_SPEED = 6.2;
 
 let nickname = "";
 let myPeer = null;
@@ -26,14 +32,16 @@ let remotePlayers = {};
 let lastSeenPeers = {};
 
 let mqttClient = null;
-const MQTT_BROKER_URL = 'wss://broker.emqx.io:8084/mqtt';
-const PRESENCE_TOPIC = 'threeDLibraryFPS/presence/v1';
+let signalReady = false;
+const MQTT_BROKER_URL = 'wss://broker.hivemq.com:8884/mqtt';
+const PRESENCE_TOPIC = 'library3dfps/presence/v2';
 
 let animatedObjects = [];
 let lights = {};
 
 let gameStarted = false;
 let elapsedTime = 0;
+let timerFrozen = false;
 
 const PHASE1_END = 60;
 const PHASE2_END = 90;
@@ -43,6 +51,18 @@ let currentPhase = 1;
 let glitchTriggered = false;
 let glitchAudioCtx = null;
 
+/* TV state */
+let tvGroup = null;
+let tvScreenMesh = null;
+let tvScreenWidth = 1.7;
+let tvScreenHeight = 0.96;
+let tvActive = false;
+let tvNearPlayer = false;
+let ytPlayer = null;
+let ytApiReady = false;
+let pendingYouTubeLoad = null;
+let tvUsingGenericIframe = false;
+
 /* ---------------------- DOM References ---------------------- */
 
 const startOverlay = document.getElementById('start-overlay');
@@ -50,6 +70,9 @@ const nicknameInput = document.getElementById('nickname-input');
 const startBtn = document.getElementById('start-btn');
 const startError = document.getElementById('start-error');
 const connectionStatus = document.getElementById('connection-status');
+const inviteLinkInput = document.getElementById('invite-link-input');
+const inviteCopyBtn = document.getElementById('invite-copy-btn');
+
 const hud = document.getElementById('hud');
 const timerValue = document.getElementById('timer-value');
 const playersCount = document.getElementById('players-count');
@@ -62,6 +85,19 @@ const joystickKnob = document.getElementById('joystick-knob');
 const lookZone = document.getElementById('look-zone');
 const mobileExitBtn = document.getElementById('mobile-exit-btn');
 const fullscreenBtn = document.getElementById('fullscreen-btn');
+const jumpBtn = document.getElementById('jump-btn');
+const tvInteractBtn = document.getElementById('tv-interact-btn');
+const interactPrompt = document.getElementById('interact-prompt');
+
+const tvScreenOverlay = document.getElementById('tv-screen-overlay');
+const tvModal = document.getElementById('tv-modal');
+const tvUrlInput = document.getElementById('tv-url-input');
+const tvPlayBtn = document.getElementById('tv-play-btn');
+const tvStopBtn = document.getElementById('tv-stop-btn');
+const tvCloseBtn = document.getElementById('tv-close-btn');
+const tvQualitySelect = document.getElementById('tv-quality-select');
+const tvError = document.getElementById('tv-error');
+const tvNote = document.getElementById('tv-note');
 
 /* ==========================================================
    DEVICE DETECTION
@@ -108,6 +144,7 @@ function initScene() {
   buildLighting();
   buildRoom();
   buildShelvesAndBooks();
+  buildTV();
 
   window.addEventListener('resize', onWindowResize);
 
@@ -135,14 +172,15 @@ function setupDesktopControls() {
   document.addEventListener('keyup', onKeyUp);
 
   renderer.domElement.addEventListener('click', () => {
-    if (gameStarted && !pointerLocked) {
+    if (gameStarted && !pointerLocked && !tvModal.classList.contains('visible')) {
       renderer.domElement.requestPointerLock();
     }
   });
 
   document.addEventListener('pointerlockchange', () => {
     pointerLocked = document.pointerLockElement === renderer.domElement;
-    blockerMsg.style.display = (gameStarted && !pointerLocked) ? 'flex' : 'none';
+    const shouldShowBlocker = gameStarted && !pointerLocked && !tvModal.classList.contains('visible');
+    blockerMsg.style.display = shouldShowBlocker ? 'flex' : 'none';
   });
 
   document.addEventListener('mousemove', onMouseMove);
@@ -166,6 +204,15 @@ function onKeyDown(e) {
     case 'KeyS': case 'ArrowDown': moveState.backward = true; break;
     case 'KeyA': case 'ArrowLeft': moveState.left = true; break;
     case 'KeyD': case 'ArrowRight': moveState.right = true; break;
+    case 'Space':
+      e.preventDefault();
+      triggerJump();
+      break;
+    case 'KeyE':
+      if (tvNearPlayer && !tvModal.classList.contains('visible')) {
+        openTVModal();
+      }
+      break;
   }
 }
 
@@ -179,7 +226,7 @@ function onKeyUp(e) {
 }
 
 /* ==========================================================
-   MOBILE CONTROLS: VIRTUAL JOYSTICK + TOUCH LOOK
+   MOBILE CONTROLS: VIRTUAL JOYSTICK + TOUCH LOOK + BUTTONS
    ========================================================== */
 
 let joystickActive = false;
@@ -206,6 +253,16 @@ function setupTouchControls() {
     e.preventDefault();
     exitToMenu();
   });
+
+  jumpBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    triggerJump();
+  }, { passive: false });
+
+  tvInteractBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (tvNearPlayer) openTVModal();
+  }, { passive: false });
 }
 
 function onJoystickStart(e) {
@@ -294,6 +351,54 @@ function exitToMenu() {
   gameStarted = false;
   hud.style.display = 'none';
   startOverlay.style.display = 'flex';
+}
+
+/* ==========================================================
+   FULLSCREEN CONTROL
+   ========================================================== */
+
+function isCurrentlyFullscreen() {
+  return !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
+}
+
+function requestFullscreenCompat(el) {
+  if (el.requestFullscreen) return el.requestFullscreen();
+  if (el.webkitRequestFullscreen) return el.webkitRequestFullscreen();
+  if (el.msRequestFullscreen) return el.msRequestFullscreen();
+  return Promise.reject(new Error('Fullscreen API unavailable'));
+}
+
+function exitFullscreenCompat() {
+  if (document.exitFullscreen) return document.exitFullscreen();
+  if (document.webkitExitFullscreen) return document.webkitExitFullscreen();
+  if (document.msExitFullscreen) return document.msExitFullscreen();
+  return Promise.reject(new Error('Fullscreen API unavailable'));
+}
+
+function updateFullscreenButtonVisibility() {
+  fullscreenBtn.classList.toggle('hidden', isCurrentlyFullscreen());
+}
+
+function toggleFullscreen() {
+  if (!isCurrentlyFullscreen()) {
+    requestFullscreenCompat(document.documentElement).catch(() => {});
+  } else {
+    exitFullscreenCompat().catch(() => {});
+  }
+}
+
+function setupFullscreenControl() {
+  fullscreenBtn.addEventListener('click', toggleFullscreen);
+  fullscreenBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    toggleFullscreen();
+  }, { passive: false });
+
+  document.addEventListener('fullscreenchange', updateFullscreenButtonVisibility);
+  document.addEventListener('webkitfullscreenchange', updateFullscreenButtonVisibility);
+  document.addEventListener('msfullscreenchange', updateFullscreenButtonVisibility);
+
+  updateFullscreenButtonVisibility();
 }
 
 /* ==========================================================
@@ -587,7 +692,7 @@ function buildShelvesAndBooks() {
 
   const readingTableMat = new THREE.MeshStandardMaterial({ map: makeWoodTexture('#5a3c1e', '#33210f'), roughness: 0.7 });
   const table = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.08, 1.1), readingTableMat);
-  table.position.set(0, 0.75, 0);
+  table.position.set(0, 0.75, 2.5);
   table.castShadow = true;
   table.receiveShadow = true;
   scene.add(table);
@@ -595,14 +700,368 @@ function buildShelvesAndBooks() {
   const legGeo = new THREE.BoxGeometry(0.08, 0.75, 0.08);
   [[-1.1, -0.45], [1.1, -0.45], [-1.1, 0.45], [1.1, 0.45]].forEach(([lx, lz]) => {
     const leg = new THREE.Mesh(legGeo, readingTableMat);
-    leg.position.set(lx, 0.375, lz);
+    leg.position.set(lx, 0.375, lz + 2.5);
     leg.castShadow = true;
     scene.add(leg);
   });
 }
 
 /* ==========================================================
-   MOVEMENT (UNIFIED: KEYBOARD + JOYSTICK)
+   SMART TV
+   ========================================================== */
+
+function buildTV() {
+  tvGroup = new THREE.Group();
+  tvGroup.position.set(0, 0, -3.6);
+  tvGroup.rotation.y = 0;
+
+  const metalMat = new THREE.MeshStandardMaterial({ color: 0x161616, roughness: 0.35, metalness: 0.75 });
+
+  const baseGeo = new THREE.BoxGeometry(0.7, 0.04, 0.3);
+  const base = new THREE.Mesh(baseGeo, metalMat);
+  base.position.set(0, 0.02, 0);
+  base.castShadow = true;
+  base.receiveShadow = true;
+  tvGroup.add(base);
+
+  const neckGeo = new THREE.BoxGeometry(0.08, 0.9, 0.06);
+  const neck = new THREE.Mesh(neckGeo, metalMat);
+  neck.position.set(0, 0.5, 0);
+  neck.castShadow = true;
+  tvGroup.add(neck);
+
+  const bezelGeo = new THREE.BoxGeometry(tvScreenWidth + 0.05, tvScreenHeight + 0.05, 0.045);
+  const bezel = new THREE.Mesh(bezelGeo, metalMat);
+  bezel.position.set(0, 1.28, 0);
+  bezel.castShadow = true;
+  tvGroup.add(bezel);
+
+  const screenMat = new THREE.MeshStandardMaterial({
+    color: 0x030303,
+    emissive: 0x0c1220,
+    emissiveIntensity: 0.4,
+    roughness: 0.2,
+    metalness: 0.1
+  });
+  const screenGeo = new THREE.PlaneGeometry(tvScreenWidth, tvScreenHeight);
+  tvScreenMesh = new THREE.Mesh(screenGeo, screenMat);
+  tvScreenMesh.position.set(0, 1.28, 0.024);
+  tvGroup.add(tvScreenMesh);
+
+  const ledGeo = new THREE.SphereGeometry(0.012, 8, 8);
+  const ledMat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0x2ecc55, emissiveIntensity: 1.5 });
+  const led = new THREE.Mesh(ledGeo, ledMat);
+  led.position.set(0, 1.28 - tvScreenHeight / 2 - 0.02, 0.03);
+  tvGroup.add(led);
+
+  scene.add(tvGroup);
+}
+
+function updateTVInteraction() {
+  camera.updateMatrixWorld(true);
+  const camPos = new THREE.Vector3();
+  const camDir = new THREE.Vector3();
+  camera.getWorldPosition(camPos);
+  camera.getWorldDirection(camDir);
+  raycaster.set(camPos, camDir);
+
+  const hits = raycaster.intersectObject(tvScreenMesh, false);
+  const near = hits.length > 0 && hits[0].distance < 4.5;
+
+  if (near !== tvNearPlayer) {
+    tvNearPlayer = near;
+    if (!isMobile) {
+      interactPrompt.classList.toggle('visible', near && !tvModal.classList.contains('visible'));
+    } else {
+      tvInteractBtn.classList.toggle('visible', near);
+    }
+  }
+}
+
+function worldToScreenPoint(vec3) {
+  const p = vec3.clone().project(camera);
+  const halfW = window.innerWidth / 2;
+  const halfH = window.innerHeight / 2;
+  return {
+    x: p.x * halfW + halfW,
+    y: -p.y * halfH + halfH,
+    behind: p.z > 1 || p.z < -1
+  };
+}
+
+function updateTVOverlayPosition() {
+  if (!tvActive) {
+    tvScreenOverlay.style.display = 'none';
+    return;
+  }
+  if (currentPhase === 3) {
+    tvScreenOverlay.style.display = 'none';
+    return;
+  }
+
+  const hw = tvScreenWidth / 2;
+  const hh = tvScreenHeight / 2;
+  const corners = [
+    new THREE.Vector3(-hw, hh, 0),
+    new THREE.Vector3(hw, hh, 0),
+    new THREE.Vector3(-hw, -hh, 0),
+    new THREE.Vector3(hw, -hh, 0)
+  ].map(c => tvScreenMesh.localToWorld(c.clone()));
+
+  const projected = corners.map(worldToScreenPoint);
+  if (projected.some(p => p.behind)) {
+    tvScreenOverlay.style.display = 'none';
+    return;
+  }
+
+  const xs = projected.map(p => p.x);
+  const ys = projected.map(p => p.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const w = maxX - minX;
+  const h = maxY - minY;
+
+  if (w < 4 || h < 4 || minX > window.innerWidth || maxX < 0 || minY > window.innerHeight || maxY < 0) {
+    tvScreenOverlay.style.display = 'none';
+    return;
+  }
+
+  tvScreenOverlay.style.display = 'block';
+  tvScreenOverlay.style.left = minX + 'px';
+  tvScreenOverlay.style.top = minY + 'px';
+  tvScreenOverlay.style.width = w + 'px';
+  tvScreenOverlay.style.height = h + 'px';
+}
+
+/* ---------------------- TV modal & video loading ---------------------- */
+
+function openTVModal() {
+  tvError.textContent = '';
+  tvModal.classList.add('visible');
+  if (!isMobile && pointerLocked) {
+    document.exitPointerLock();
+  }
+}
+
+function closeTVModal() {
+  tvModal.classList.remove('visible');
+  if (!isMobile && gameStarted) {
+    renderer.domElement.requestPointerLock();
+  }
+}
+
+function extractYouTubeId(url) {
+  const patterns = [
+    /youtube\.com\/watch\?[^#]*v=([\w-]{11})/,
+    /youtu\.be\/([\w-]{11})/,
+    /youtube\.com\/embed\/([\w-]{11})/,
+    /youtube\.com\/shorts\/([\w-]{11})/
+  ];
+  for (const p of patterns) {
+    const m = url.match(p);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+function extractRutubeId(url) {
+  const m = url.match(/rutube\.ru\/(?:video|play\/embed)\/([a-zA-Z0-9]+)/);
+  return m ? m[1] : null;
+}
+
+function extractDzenId(url) {
+  const m = url.match(/dzen\.ru\/(?:video\/watch|embed)\/([a-zA-Z0-9_-]+)/);
+  return m ? m[1] : null;
+}
+
+function clearTVPlayer() {
+  if (ytPlayer) {
+    try { ytPlayer.destroy(); } catch (e) {}
+    ytPlayer = null;
+  }
+  tvScreenOverlay.innerHTML = '';
+  tvUsingGenericIframe = false;
+}
+
+function handleTVPlayRequest() {
+  const url = tvUrlInput.value.trim();
+  tvError.textContent = '';
+  tvNote.textContent = '';
+
+  if (!url) {
+    tvError.textContent = 'Вставьте ссылку на видео';
+    return;
+  }
+
+  const ytId = extractYouTubeId(url);
+  if (ytId) {
+    loadYouTubeVideo(ytId);
+    return;
+  }
+
+  const rtId = extractRutubeId(url);
+  if (rtId) {
+    loadGenericIframe(
+      `https://rutube.ru/play/embed/${rtId}`,
+      'Rutube не предоставляет публичный API для смены качества — воспроизведение в автоматическом качестве, выбранном плеером.'
+    );
+    return;
+  }
+
+  const dzId = extractDzenId(url);
+  if (dzId) {
+    loadGenericIframe(
+      `https://dzen.ru/embed/${dzId}`,
+      'Дзен не предоставляет публичный API для смены качества — воспроизведение в автоматическом качестве, выбранном плеером.'
+    );
+    return;
+  }
+
+  tvError.textContent = 'Не удалось распознать ссылку. Поддерживаются YouTube, Rutube и Дзен.';
+}
+
+function activateTVScreen() {
+  tvActive = true;
+  tvScreenMesh.visible = false;
+}
+
+function loadYouTubeVideo(videoId) {
+  clearTVPlayer();
+  activateTVScreen();
+
+  tvQualitySelect.disabled = true;
+  tvQualitySelect.innerHTML = '<option value="auto">Загрузка...</option>';
+
+  const playerDiv = document.createElement('div');
+  playerDiv.id = 'yt-player-slot-' + Date.now();
+  playerDiv.style.width = '100%';
+  playerDiv.style.height = '100%';
+  tvScreenOverlay.appendChild(playerDiv);
+
+  if (window.YT && window.YT.Player) {
+    createYTPlayer(videoId, playerDiv.id);
+  } else {
+    pendingYouTubeLoad = { videoId, divId: playerDiv.id };
+    tvNote.textContent = 'Загружается плеер YouTube...';
+  }
+}
+
+function createYTPlayer(videoId, divId) {
+  ytPlayer = new YT.Player(divId, {
+    videoId: videoId,
+    width: '100%',
+    height: '100%',
+    playerVars: {
+      autoplay: 1,
+      controls: 0,
+      disablekb: 1,
+      rel: 0,
+      modestbranding: 1,
+      playsinline: 1
+    },
+    events: {
+      onReady: (e) => {
+        e.target.playVideo();
+        populateQualityOptions(e.target);
+        tvNote.textContent = 'Видео воспроизводится на экране в библиотеке.';
+      },
+      onError: () => {
+        tvError.textContent = 'Не удалось загрузить это видео YouTube. Проверьте ссылку.';
+      }
+    }
+  });
+}
+
+function populateQualityOptions(player) {
+  let levels = [];
+  try { levels = player.getAvailableQualityLevels() || []; } catch (e) { levels = []; }
+
+  const labels = {
+    hd2160: '4K (2160p)',
+    hd1440: '1440p',
+    hd1080: '1080p',
+    hd720: '720p',
+    large: '480p',
+    medium: '360p',
+    small: '240p',
+    tiny: '144p',
+    auto: 'Автоматически'
+  };
+
+  tvQualitySelect.innerHTML = '';
+  const autoOpt = document.createElement('option');
+  autoOpt.value = 'auto';
+  autoOpt.textContent = 'Автоматически';
+  tvQualitySelect.appendChild(autoOpt);
+
+  if (levels.length) {
+    levels.forEach(level => {
+      const opt = document.createElement('option');
+      opt.value = level;
+      opt.textContent = labels[level] || level;
+      tvQualitySelect.appendChild(opt);
+    });
+    tvQualitySelect.disabled = false;
+    tvNote.textContent = 'Качество можно менять вручную (YouTube может переопределить выбор в зависимости от скорости соединения).';
+  } else {
+    tvQualitySelect.disabled = true;
+    tvNote.textContent = 'YouTube не предоставил список доступных вариантов качества для этого видео — используется автоматический режим.';
+  }
+}
+
+tvQualitySelect.addEventListener('change', () => {
+  if (ytPlayer && typeof ytPlayer.setPlaybackQuality === 'function') {
+    ytPlayer.setPlaybackQuality(tvQualitySelect.value);
+  }
+});
+
+function loadGenericIframe(src, note) {
+  clearTVPlayer();
+  activateTVScreen();
+  tvUsingGenericIframe = true;
+
+  const iframe = document.createElement('iframe');
+  iframe.src = src;
+  iframe.setAttribute('allow', 'autoplay; fullscreen');
+  iframe.setAttribute('allowfullscreen', 'true');
+  tvScreenOverlay.appendChild(iframe);
+
+  tvQualitySelect.innerHTML = '<option value="auto">Недоступно для этой платформы</option>';
+  tvQualitySelect.disabled = true;
+  tvNote.textContent = note;
+}
+
+function stopTV() {
+  clearTVPlayer();
+  tvActive = false;
+  tvScreenMesh.visible = true;
+  tvScreenOverlay.style.display = 'none';
+  tvUrlInput.value = '';
+  tvQualitySelect.innerHTML = '<option value="auto">Автоматически</option>';
+  tvQualitySelect.disabled = true;
+  tvError.textContent = '';
+  tvNote.textContent = '';
+}
+
+window.onYouTubeIframeAPIReady = function () {
+  ytApiReady = true;
+  if (pendingYouTubeLoad) {
+    createYTPlayer(pendingYouTubeLoad.videoId, pendingYouTubeLoad.divId);
+    pendingYouTubeLoad = null;
+  }
+};
+
+tvPlayBtn.addEventListener('click', handleTVPlayRequest);
+tvStopBtn.addEventListener('click', stopTV);
+tvCloseBtn.addEventListener('click', closeTVModal);
+tvUrlInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') handleTVPlayRequest();
+});
+
+/* ==========================================================
+   MOVEMENT (UNIFIED: KEYBOARD + JOYSTICK) + JUMP
    ========================================================== */
 
 function getMoveInput() {
@@ -638,26 +1097,53 @@ function updateMovement(delta) {
   const limit = worldHalfSize - 0.8;
   yawObject.position.x = Math.max(-limit, Math.min(limit, yawObject.position.x));
   yawObject.position.z = Math.max(-limit, Math.min(limit, yawObject.position.z));
-  yawObject.position.y = playerHeight;
+}
+
+function triggerJump() {
+  if (isGrounded && gameStarted && !tvModal.classList.contains('visible')) {
+    verticalVelocity = JUMP_SPEED;
+    isGrounded = false;
+  }
+}
+
+function updateVerticalPhysics(delta) {
+  if (!isGrounded) {
+    verticalVelocity += GRAVITY * delta;
+    yawObject.position.y += verticalVelocity * delta;
+  }
+  if (yawObject.position.y <= playerHeight) {
+    yawObject.position.y = playerHeight;
+    verticalVelocity = 0;
+    isGrounded = true;
+  }
 }
 
 /* ==========================================================
-   SIGNALING (MQTT over WebSocket, public broker — no backend needed)
+   SIGNALING (MQTT presence broadcast + direct invite-link fallback)
    ========================================================== */
 
 function initMultiplayer() {
-  connectionStatus.textContent = 'Подключение к серверу...';
+  connectionStatus.textContent = 'Подключение к сети...';
 
   myPeer = new Peer(undefined, {
     host: '0.peerjs.com',
     port: 443,
     secure: true,
-    path: '/'
+    path: '/',
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+    }
   });
 
   myPeer.on('open', (id) => {
     myPeerId = id;
+    connectionStatus.textContent = 'Подключено. Ваш ID: ' + id.substring(0, 8) + '...';
+    setupInviteLink(id);
     connectSignaling();
+    tryConnectFromInviteParam();
   });
 
   myPeer.on('connection', (conn) => {
@@ -666,24 +1152,49 @@ function initMultiplayer() {
 
   myPeer.on('error', (err) => {
     console.warn('PeerJS error:', err);
+    connectionStatus.textContent = 'Ошибка PeerJS: ' + (err && err.type ? err.type : 'неизвестна');
   });
+}
+
+function setupInviteLink(id) {
+  const url = new URL(window.location.href);
+  url.searchParams.set('peer', id);
+  inviteLinkInput.value = url.toString();
+}
+
+function tryConnectFromInviteParam() {
+  const params = new URLSearchParams(window.location.search);
+  const targetId = params.get('peer');
+  if (targetId && targetId !== myPeerId && !connections[targetId]) {
+    const conn = myPeer.connect(targetId, { reliable: true, metadata: { nickname: nickname } });
+    setupConnection(conn);
+  }
 }
 
 function connectSignaling() {
   try {
+    const shortId = myPeerId.substring(0, 12).replace(/[^a-zA-Z0-9]/g, '');
     mqttClient = mqtt.connect(MQTT_BROKER_URL, {
-      clientId: 'lib3d_' + myPeerId + '_' + Math.floor(Math.random() * 10000),
+      clientId: 'lib3d' + shortId + Math.floor(Math.random() * 1000),
       clean: true,
-      reconnectPeriod: 3000,
-      connectTimeout: 8000
+      reconnectPeriod: 4000,
+      connectTimeout: 10000
     });
 
     mqttClient.on('connect', () => {
-      connectionStatus.textContent = 'Подключено к сети. Ваш ID: ' + myPeerId.substring(0, 8);
+      connectionStatus.textContent = 'Сеть активна. Ваш ID: ' + myPeerId.substring(0, 8) + '...';
       mqttClient.subscribe(PRESENCE_TOPIC);
       publishPresence();
-      setInterval(publishPresence, 3000);
-      setInterval(prunePeers, 4000);
+
+      if (!signalReady) {
+        signalReady = true;
+        setInterval(publishPresence, 3000);
+        setInterval(prunePeers, 4000);
+      }
+    });
+
+    mqttClient.on('reconnect', () => {
+      connectionStatus.textContent = 'Переподключение к сети...';
     });
 
     mqttClient.on('message', (topic, payload) => {
@@ -696,11 +1207,11 @@ function connectSignaling() {
 
     mqttClient.on('error', (err) => {
       console.warn('MQTT signaling error:', err);
-      connectionStatus.textContent = 'Ошибка подключения к серверу сигнализации';
+      connectionStatus.textContent = 'Общий сервер недоступен. Используйте ссылку-приглашение ниже.';
     });
   } catch (e) {
     console.warn('MQTT unavailable:', e);
-    connectionStatus.textContent = 'Мультиплеер недоступен (сеть заблокирована)';
+    connectionStatus.textContent = 'Мультиплеер через общий сервер недоступен. Используйте ссылку-приглашение.';
   }
 }
 
@@ -750,10 +1261,12 @@ function setupConnection(conn) {
 
   conn.on('open', () => {
     conn.send({ type: 'hello', nickname: nickname });
+    lastSeenPeers[conn.peer] = Date.now();
     updatePlayersCount();
   });
 
   conn.on('data', (data) => {
+    lastSeenPeers[conn.peer] = Date.now();
     handlePeerData(conn.peer, data);
   });
 
@@ -830,12 +1343,13 @@ function ensureRemotePlayer(peerId, nick) {
   const sprite = makeNicknameSprite(nick || 'Гость');
   group.add(sprite);
 
+  group.position.set(0, playerHeight, 0);
   scene.add(group);
 
   remotePlayers[peerId] = {
     group,
     nickname: nick || 'Гость',
-    targetPos: new THREE.Vector3(0, 0, 0),
+    targetPos: new THREE.Vector3(0, playerHeight, 0),
     targetRotY: 0
   };
 }
@@ -888,6 +1402,8 @@ function formatTime(t) {
 }
 
 function updateTimer(delta) {
+  if (timerFrozen) return;
+
   elapsedTime += delta;
   timerValue.textContent = formatTime(elapsedTime);
 
@@ -906,16 +1422,7 @@ function updateTimer(delta) {
       endGlitchApocalypse();
     }
     currentPhase = 4;
-    if (elapsedTime > PHASE3_END + 0.5) {
-      resetTimerCycle();
-    }
   }
-}
-
-function resetTimerCycle() {
-  elapsedTime = 0;
-  currentPhase = 1;
-  glitchTriggered = false;
 }
 
 /* ---------------------- Phase 2: strange bugs ---------------------- */
@@ -1103,11 +1610,14 @@ function animate() {
   const t = clock.elapsedTime;
 
   if (gameStarted) {
-    const controlsActive = isMobile || pointerLocked;
+    const controlsActive = (isMobile || pointerLocked) && !tvModal.classList.contains('visible');
     if (controlsActive) {
       updateMovement(delta);
     }
+    updateVerticalPhysics(delta);
     updateTimer(delta);
+    updateTVInteraction();
+    updateTVOverlayPosition();
 
     if (currentPhase === 2) {
       applyPhase2Effects(t);
@@ -1136,54 +1646,6 @@ function broadcastPoseThrottled(delta) {
 }
 
 /* ==========================================================
-   FULLSCREEN CONTROL
-   ========================================================== */
-
-function isCurrentlyFullscreen() {
-  return !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
-}
-
-function requestFullscreenCompat(el) {
-  if (el.requestFullscreen) return el.requestFullscreen();
-  if (el.webkitRequestFullscreen) return el.webkitRequestFullscreen();
-  if (el.msRequestFullscreen) return el.msRequestFullscreen();
-  return Promise.reject(new Error('Fullscreen API unavailable'));
-}
-
-function exitFullscreenCompat() {
-  if (document.exitFullscreen) return document.exitFullscreen();
-  if (document.webkitExitFullscreen) return document.webkitExitFullscreen();
-  if (document.msExitFullscreen) return document.msExitFullscreen();
-  return Promise.reject(new Error('Fullscreen API unavailable'));
-}
-
-function updateFullscreenButtonVisibility() {
-  fullscreenBtn.classList.toggle('hidden', isCurrentlyFullscreen());
-}
-
-function toggleFullscreen() {
-  if (!isCurrentlyFullscreen()) {
-    requestFullscreenCompat(document.documentElement).catch(() => {});
-  } else {
-    exitFullscreenCompat().catch(() => {});
-  }
-}
-
-function setupFullscreenControl() {
-  fullscreenBtn.addEventListener('click', toggleFullscreen);
-  fullscreenBtn.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    toggleFullscreen();
-  }, { passive: false });
-
-  document.addEventListener('fullscreenchange', updateFullscreenButtonVisibility);
-  document.addEventListener('webkitfullscreenchange', updateFullscreenButtonVisibility);
-  document.addEventListener('msfullscreenchange', updateFullscreenButtonVisibility);
-
-  updateFullscreenButtonVisibility();
-}
-
-/* ==========================================================
    START FLOW
    ========================================================== */
 
@@ -1208,12 +1670,25 @@ function startGame() {
 
   if (!myPeer) {
     initMultiplayer();
+  } else if (mqttClient) {
+    publishPresence();
   }
 }
 
 startBtn.addEventListener('click', startGame);
 nicknameInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') startGame();
+});
+
+inviteCopyBtn.addEventListener('click', () => {
+  inviteLinkInput.select();
+  try {
+    navigator.clipboard.writeText(inviteLinkInput.value);
+    inviteCopyBtn.textContent = 'Скопировано!';
+    setTimeout(() => { inviteCopyBtn.textContent = 'Копировать'; }, 1500);
+  } catch (e) {
+    document.execCommand('copy');
+  }
 });
 
 /* ==========================================================
@@ -1224,3 +1699,7 @@ initScene();
 setupFullscreenControl();
 onWindowResize();
 animate();
+
+/* Begin peer/signaling setup immediately so the invite link and
+   your own ID are available even before pressing "start". */
+initMultiplayer();

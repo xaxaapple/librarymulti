@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 <script src="https://unpkg.com/mqtt@5.3.4/dist/mqtt.min.js"></script>
+<script src="https://www.youtube.com/iframe_api"></script>
 </head>
 <body>
 
@@ -18,15 +19,27 @@
     <p>Введите ваш никнейм, чтобы войти в 3D-мир</p>
     <input id="nickname-input" type="text" maxlength="16" placeholder="Ваш никнейм" autocomplete="off">
     <button id="start-btn">Войти в библиотеку</button>
-    <p class="hint" id="hint-desktop">Управление: WASD — движение, мышь — обзор, ESC — выход из режима мыши</p>
-    <p class="hint" id="hint-mobile">Управление: джойстик слева — движение, свайп справа — обзор</p>
+    <p class="hint" id="hint-desktop">WASD — движение, ПРОБЕЛ — прыжок, мышь — обзор, E — взаимодействие с ТВ, ESC — выход из мыши</p>
+    <p class="hint" id="hint-mobile">Джойстик слева — движение, свайп справа — обзор, кнопки справа — прыжок и ТВ</p>
     <p id="start-error"></p>
     <p id="connection-status"></p>
+    <div id="invite-box">
+      <p class="hint">Пригласите друга напрямую (работает, даже если общий сервер недоступен):</p>
+      <div id="invite-link-row">
+        <input id="invite-link-input" type="text" readonly>
+        <button id="invite-copy-btn">Копировать</button>
+      </div>
+    </div>
   </div>
 </div>
 
+<button id="fullscreen-btn" title="Полноэкранный режим">⛶ Полный экран</button>
+
+<canvas id="glitch-canvas"></canvas>
+
 <div id="hud">
   <div id="crosshair">+</div>
+  <div id="interact-prompt">Нажмите <b>E</b>, чтобы включить ТВ</div>
   <div id="timer-box">
     <span id="timer-label">Время:</span>
     <span id="timer-value">00:00</span>
@@ -39,12 +52,34 @@
     </div>
   </div>
   <div id="look-zone"></div>
+
+  <button id="jump-btn">↑<br>ПРЫЖОК</button>
+  <button id="tv-interact-btn">📺<br>ТВ</button>
   <div id="mobile-exit-btn">✕</div>
 </div>
 
-<button id="fullscreen-btn" title="Полноэкранный режим">⛶ Полный экран</button>
+<div id="tv-screen-overlay"></div>
 
-<canvas id="glitch-canvas"></canvas>
+<div id="tv-modal">
+  <div id="tv-modal-box">
+    <h2>Телевизор</h2>
+    <p class="hint">Поддерживаются ссылки YouTube, Rutube и Дзен</p>
+    <input id="tv-url-input" type="text" placeholder="Вставьте ссылку на видео...">
+    <div id="tv-modal-buttons">
+      <button id="tv-play-btn">Воспроизвести</button>
+      <button id="tv-stop-btn">Выключить ТВ</button>
+      <button id="tv-close-btn">Закрыть</button>
+    </div>
+    <div id="tv-quality-row">
+      <label for="tv-quality-select">Качество:</label>
+      <select id="tv-quality-select" disabled>
+        <option value="auto">Автоматически</option>
+      </select>
+    </div>
+    <p id="tv-error"></p>
+    <p id="tv-note"></p>
+  </div>
+</div>
 
 <div id="blocker-msg">Кликните по экрану, чтобы вернуться в игру</div>
 
