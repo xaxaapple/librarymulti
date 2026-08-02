@@ -83,6 +83,32 @@ canvas#app-canvas {
   border-color: #e8c887;
 }
 
+/* ---------- Avatar color picker ---------- */
+#avatar-color-row {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.avatar-swatch {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid rgba(240, 230, 200, 0.25);
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.avatar-swatch:hover {
+  transform: scale(1.1);
+}
+
+.avatar-swatch.selected {
+  border-color: #e8c887;
+  box-shadow: 0 0 8px rgba(232, 200, 135, 0.7);
+}
+
 #start-btn {
   width: 100%;
   padding: 11px 12px;
@@ -261,6 +287,56 @@ body.is-mobile #fullscreen-btn {
   color: #cbb98f;
 }
 
+/* ---------- Top tools (camera / phone toggle) ---------- */
+#top-tools {
+  position: absolute;
+  top: 60px;
+  left: 16px;
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+#top-tools button {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: rgba(10, 8, 5, 0.6);
+  border: 1px solid rgba(168, 132, 47, 0.55);
+  color: #f0e6c8;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+#top-tools button:hover, #top-tools button.active {
+  background: rgba(80, 60, 25, 0.85);
+}
+
+/* ---------- Emote bar ---------- */
+#emote-bar {
+  position: absolute;
+  bottom: 200px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.emote-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(10, 8, 5, 0.6);
+  border: 1px solid rgba(168, 132, 47, 0.55);
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.emote-btn:hover {
+  background: rgba(80, 60, 25, 0.85);
+}
+
 /* ---------- Blocker ---------- */
 #blocker-msg {
   position: fixed;
@@ -286,22 +362,7 @@ body.is-mobile #fullscreen-btn {
   display: none;
 }
 
-/* ---------- TV screen overlay (video projection) ---------- */
-#tv-screen-overlay {
-  position: fixed;
-  z-index: 12;
-  pointer-events: none;
-  display: none;
-  background: #000;
-  overflow: hidden;
-}
-
-#tv-screen-overlay iframe {
-  width: 100%;
-  height: 100%;
-  border: none;
-  display: block;
-}
+/* ---------- CSS3D layer (TV video) is created and styled from JS ---------- */
 
 /* ---------- TV modal ---------- */
 #tv-modal {
@@ -413,6 +474,92 @@ body.is-mobile #fullscreen-btn {
   font-size: 11px;
   color: #83795f;
   margin-top: 6px;
+}
+
+/* ---------- Phone browser panel ---------- */
+#phone-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: 320px;
+  height: 480px;
+  max-width: 90vw;
+  max-height: 70vh;
+  z-index: 160;
+  display: none;
+  flex-direction: column;
+  background: #111;
+  border: 3px solid #222;
+  border-radius: 22px;
+  overflow: hidden;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+}
+
+#phone-panel.visible {
+  display: flex;
+}
+
+#phone-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #1a1a1a;
+  color: #ddd;
+  font-size: 12px;
+}
+
+#phone-close-btn {
+  background: none;
+  border: none;
+  color: #ddd;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+#phone-address-row {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #1a1a1a;
+}
+
+#phone-url-input {
+  flex: 1;
+  padding: 7px 9px;
+  font-size: 12px;
+  border-radius: 12px;
+  border: none;
+  outline: none;
+  background: #2a2a2a;
+  color: #eee;
+}
+
+#phone-go-btn {
+  width: 32px;
+  border-radius: 10px;
+  border: none;
+  background: #3a3a3a;
+  color: #fff;
+  cursor: pointer;
+}
+
+#phone-note {
+  font-size: 10px;
+  color: #888;
+  padding: 0 10px 6px;
+  font-family: sans-serif;
+}
+
+#phone-frame-wrap {
+  flex: 1;
+  background: #fff;
+}
+
+#phone-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
 }
 
 /* ---------- Mobile touch controls (hidden by default) ---------- */
@@ -554,12 +701,29 @@ body.is-mobile #players-box {
   padding: 5px 10px;
 }
 
+body.is-mobile #top-tools {
+  top: 56px;
+}
+
+body.is-mobile #emote-bar {
+  bottom: 210px;
+}
+
+body.is-mobile #phone-panel {
+  right: 8px;
+  bottom: 8px;
+  width: 88vw;
+  height: 60vh;
+}
+
 @media (max-width: 480px) {
   #start-box h1 { font-size: 24px; }
   #joystick-base { left: 24px; bottom: 30px; width: 100px; height: 100px; }
   #joystick-knob { width: 46px; height: 46px; margin-left: -23px; margin-top: -23px; }
   #jump-btn { width: 62px; height: 62px; right: 20px; bottom: 100px; }
   #tv-interact-btn { width: 62px; height: 62px; right: 92px; bottom: 30px; }
+  #top-tools button { width: 36px; height: 36px; font-size: 15px; }
+  .emote-btn { width: 38px; height: 38px; font-size: 15px; }
 }
 
 @media (orientation: portrait) and (max-width: 900px) {

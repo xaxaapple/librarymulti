@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="styles.css">
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/renderers/CSS3DRenderer.js"></script>
 <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 <script src="https://unpkg.com/mqtt@5.3.4/dist/mqtt.min.js"></script>
 <script src="https://www.youtube.com/iframe_api"></script>
@@ -18,9 +19,13 @@
     <h1>Библиотека</h1>
     <p>Введите ваш никнейм, чтобы войти в 3D-мир</p>
     <input id="nickname-input" type="text" maxlength="16" placeholder="Ваш никнейм" autocomplete="off">
+
+    <p class="hint" style="margin-top:0;">Цвет персонажа</p>
+    <div id="avatar-color-row"></div>
+
     <button id="start-btn">Войти в библиотеку</button>
-    <p class="hint" id="hint-desktop">WASD — движение, ПРОБЕЛ — прыжок, мышь — обзор, E — взаимодействие с ТВ, ESC — выход из мыши</p>
-    <p class="hint" id="hint-mobile">Джойстик слева — движение, свайп справа — обзор, кнопки справа — прыжок и ТВ</p>
+    <p class="hint" id="hint-desktop">WASD — движение, ПРОБЕЛ — прыжок, мышь — обзор, E — ТВ, V — вид от 3-го лица, Q — телефон, 1/2/3 — эмоции</p>
+    <p class="hint" id="hint-mobile">Джойстик слева — движение, свайп справа — обзор, кнопки справа — прыжок и ТВ, иконки сверху и снизу — камера/телефон/эмоции</p>
     <p id="start-error"></p>
     <p id="connection-status"></p>
     <div id="invite-box">
@@ -46,6 +51,17 @@
   </div>
   <div id="players-box">Игроков онлайн: <span id="players-count">1</span></div>
 
+  <div id="top-tools">
+    <button id="camera-toggle-btn" title="Вид от 3-го лица (V)">👁</button>
+    <button id="phone-toggle-btn" title="Телефон (Q)">📱</button>
+  </div>
+
+  <div id="emote-bar">
+    <button class="emote-btn" data-emote="wave" title="1">👋</button>
+    <button class="emote-btn" data-emote="like" title="2">👍</button>
+    <button class="emote-btn" data-emote="cheer" title="3">🎉</button>
+  </div>
+
   <div id="joystick-zone">
     <div id="joystick-base">
       <div id="joystick-knob"></div>
@@ -58,12 +74,25 @@
   <div id="mobile-exit-btn">✕</div>
 </div>
 
-<div id="tv-screen-overlay"></div>
+<div id="phone-panel">
+  <div id="phone-header">
+    <span>Смартфон · Браузер</span>
+    <button id="phone-close-btn">✕</button>
+  </div>
+  <div id="phone-address-row">
+    <input id="phone-url-input" type="text" placeholder="Введите адрес сайта или запрос...">
+    <button id="phone-go-btn">→</button>
+  </div>
+  <p id="phone-note">Некоторые сайты запрещают показ внутри фрейма — в этом случае экран останется пустым.</p>
+  <div id="phone-frame-wrap">
+    <iframe id="phone-iframe" src="about:blank"></iframe>
+  </div>
+</div>
 
 <div id="tv-modal">
   <div id="tv-modal-box">
     <h2>Телевизор</h2>
-    <p class="hint">Поддерживаются ссылки YouTube, Rutube и Дзен</p>
+    <p class="hint">Поддерживаются ссылки YouTube, Rutube и Дзен. Видео увидят все игроки в комнате.</p>
     <input id="tv-url-input" type="text" placeholder="Вставьте ссылку на видео...">
     <div id="tv-modal-buttons">
       <button id="tv-play-btn">Воспроизвести</button>

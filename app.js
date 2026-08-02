@@ -1,11 +1,11 @@
 /* ==========================================================
-   3D LIBRARY — FPS + REAL INTERNET MULTIPLAYER (PeerJS + MQTT + invite link)
-   + DESKTOP & MOBILE CONTROLS + JUMP + SMART TV
+   3D LIBRARY — FPS + MULTIPLAYER + TV + PHONE + EMOTES + CAMERA MODES
    ========================================================== */
 
 /* ---------------------- Global State ---------------------- */
 
 let scene, camera, renderer;
+let cssScene, cssRenderer;
 let clock = new THREE.Clock();
 let raycaster = new THREE.Raycaster();
 
@@ -24,6 +24,16 @@ let isGrounded = true;
 const GRAVITY = -16;
 const JUMP_SPEED = 6.2;
 
+/* Camera mode */
+let thirdPerson = false;
+const FIRST_PERSON_OFFSET = new THREE.Vector3(0, 0, 0);
+const THIRD_PERSON_OFFSET = new THREE.Vector3(0, 0.35, 3.4);
+
+/* Avatar */
+const AVATAR_COLORS = ['#3a6ea5', '#a53a3a', '#3aa563', '#a58c3a', '#7a3aa5', '#3aa5a0'];
+let myColor = AVATAR_COLORS[0];
+let selfAvatar = null;
+
 let nickname = "";
 let myPeer = null;
 let myPeerId = null;
@@ -34,7 +44,7 @@ let lastSeenPeers = {};
 let mqttClient = null;
 let signalReady = false;
 const MQTT_BROKER_URL = 'wss://broker.hivemq.com:8884/mqtt';
-const PRESENCE_TOPIC = 'library3dfps/presence/v2';
+const PRESENCE_TOPIC = 'library3dfps/presence/v3';
 
 let animatedObjects = [];
 let lights = {};
@@ -58,10 +68,15 @@ let tvScreenWidth = 1.7;
 let tvScreenHeight = 0.96;
 let tvActive = false;
 let tvNearPlayer = false;
+let tvVideoDiv = null;
+let tvCSSObject = null;
 let ytPlayer = null;
-let ytApiReady = false;
 let pendingYouTubeLoad = null;
-let tvUsingGenericIframe = false;
+let lastTVUrl = null;
+
+/* Phone */
+let phoneOpen = false;
+let phoneProp = null;
 
 /* ---------------------- DOM References ---------------------- */
 
@@ -72,6 +87,7 @@ const startError = document.getElementById('start-error');
 const connectionStatus = document.getElementById('connection-status');
 const inviteLinkInput = document.getElementById('invite-link-input');
 const inviteCopyBtn = document.getElementById('invite-copy-btn');
+const avatarColorRow = document.getElementById('avatar-color-row');
 
 const hud = document.getElementById('hud');
 const timerValue = document.getElementById('timer-value');
@@ -88,8 +104,10 @@ const fullscreenBtn = document.getElementById('fullscreen-btn');
 const jumpBtn = document.getElementById('jump-btn');
 const tvInteractBtn = document.getElementById('tv-interact-btn');
 const interactPrompt = document.getElementById('interact-prompt');
+const cameraToggleBtn = document.getElementById('camera-toggle-btn');
+const phoneToggleBtn = document.getElementById('phone-toggle-btn');
+const emoteButtons = document.querySelectorAll('.emote-btn');
 
-const tvScreenOverlay = document.getElementById('tv-screen-overlay');
 const tvModal = document.getElementById('tv-modal');
 const tvUrlInput = document.getElementById('tv-url-input');
 const tvPlayBtn = document.getElementById('tv-play-btn');
@@ -98,6 +116,12 @@ const tvCloseBtn = document.getElementById('tv-close-btn');
 const tvQualitySelect = document.getElementById('tv-quality-select');
 const tvError = document.getElementById('tv-error');
 const tvNote = document.getElementById('tv-note');
+
+const phonePanel = document.getElementById('phone-panel');
+const phoneCloseBtn = document.getElementById('phone-close-btn');
+const phoneUrlInput = document.getElementById('phone-url-input');
+const phoneGoBtn = document.getElementById('phone-go-btn');
+const phoneIframe = document.getElementById('phone-iframe');
 
 /* ==========================================================
    DEVICE DETECTION
@@ -108,6 +132,25 @@ function detectMobile() {
   const touchCapable = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
   const narrow = window.innerWidth <= 900;
   return uaMobile || (touchCapable && narrow);
+}
+
+/* ==========================================================
+   AVATAR COLOR PICKER (start screen)
+   ========================================================== */
+
+function buildAvatarColorPicker() {
+  AVATAR_COLORS.forEach((color, idx) => {
+    const swatch = document.createElement('div');
+    swatch.className = 'avatar-swatch' + (idx === 0 ? ' selected' : '');
+    swatch.style.background = color;
+    swatch.addEventListener('click', () => {
+      myColor = color;
+      document.querySelectorAll('.avatar-swatch').forEach(s => s.classList.remove('selected'));
+      swatch.classList.add('selected');
+      if (selfAvatar) applyAvatarColor(selfAvatar, myColor);
+    });
+    avatarColorRow.appendChild(swatch);
+  });
 }
 
 /* ==========================================================
@@ -141,10 +184,22 @@ function initScene() {
   renderer.domElement.id = 'app-canvas';
   document.body.appendChild(renderer.domElement);
 
+  cssScene = new THREE.Scene();
+  cssRenderer = new THREE.CSS3DRenderer();
+  cssRenderer.setSize(window.innerWidth, window.innerHeight);
+  cssRenderer.domElement.style.position = 'fixed';
+  cssRenderer.domElement.style.top = '0';
+  cssRenderer.domElement.style.left = '0';
+  cssRenderer.domElement.style.zIndex = '12';
+  cssRenderer.domElement.style.pointerEvents = 'none';
+  document.body.appendChild(cssRenderer.domElement);
+
   buildLighting();
   buildRoom();
   buildShelvesAndBooks();
   buildTV();
+  buildSelfAvatar();
+  buildPhoneProp();
 
   window.addEventListener('resize', onWindowResize);
 
@@ -159,12 +214,13 @@ function onWindowResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  cssRenderer.setSize(window.innerWidth, window.innerHeight);
   glitchCanvas.width = window.innerWidth;
   glitchCanvas.height = window.innerHeight;
 }
 
 /* ==========================================================
-   DESKTOP CONTROLS: KEYBOARD + POINTER LOCK MOUSE LOOK
+   DESKTOP CONTROLS
    ========================================================== */
 
 function setupDesktopControls() {
@@ -172,14 +228,14 @@ function setupDesktopControls() {
   document.addEventListener('keyup', onKeyUp);
 
   renderer.domElement.addEventListener('click', () => {
-    if (gameStarted && !pointerLocked && !tvModal.classList.contains('visible')) {
+    if (gameStarted && !pointerLocked && !tvModal.classList.contains('visible') && !phoneOpen) {
       renderer.domElement.requestPointerLock();
     }
   });
 
   document.addEventListener('pointerlockchange', () => {
     pointerLocked = document.pointerLockElement === renderer.domElement;
-    const shouldShowBlocker = gameStarted && !pointerLocked && !tvModal.classList.contains('visible');
+    const shouldShowBlocker = gameStarted && !pointerLocked && !tvModal.classList.contains('visible') && !phoneOpen;
     blockerMsg.style.display = shouldShowBlocker ? 'flex' : 'none';
   });
 
@@ -199,6 +255,8 @@ function onMouseMove(e) {
 }
 
 function onKeyDown(e) {
+  if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT')) return;
+
   switch (e.code) {
     case 'KeyW': case 'ArrowUp': moveState.forward = true; break;
     case 'KeyS': case 'ArrowDown': moveState.backward = true; break;
@@ -209,10 +267,17 @@ function onKeyDown(e) {
       triggerJump();
       break;
     case 'KeyE':
-      if (tvNearPlayer && !tvModal.classList.contains('visible')) {
-        openTVModal();
-      }
+      if (tvNearPlayer && !tvModal.classList.contains('visible')) openTVModal();
       break;
+    case 'KeyV':
+      toggleCameraMode();
+      break;
+    case 'KeyQ':
+      togglePhone();
+      break;
+    case 'Digit1': triggerEmote('wave'); break;
+    case 'Digit2': triggerEmote('like'); break;
+    case 'Digit3': triggerEmote('cheer'); break;
   }
 }
 
@@ -226,7 +291,7 @@ function onKeyUp(e) {
 }
 
 /* ==========================================================
-   MOBILE CONTROLS: VIRTUAL JOYSTICK + TOUCH LOOK + BUTTONS
+   MOBILE TOUCH CONTROLS
    ========================================================== */
 
 let joystickActive = false;
@@ -249,15 +314,9 @@ function setupTouchControls() {
   lookZone.addEventListener('touchend', onLookEnd, { passive: false });
   lookZone.addEventListener('touchcancel', onLookEnd, { passive: false });
 
-  mobileExitBtn.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    exitToMenu();
-  });
+  mobileExitBtn.addEventListener('touchstart', (e) => { e.preventDefault(); exitToMenu(); });
 
-  jumpBtn.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    triggerJump();
-  }, { passive: false });
+  jumpBtn.addEventListener('touchstart', (e) => { e.preventDefault(); triggerJump(); }, { passive: false });
 
   tvInteractBtn.addEventListener('touchstart', (e) => {
     e.preventDefault();
@@ -280,9 +339,7 @@ function onJoystickStart(e) {
 function onJoystickMove(e) {
   e.preventDefault();
   for (const touch of e.changedTouches) {
-    if (touch.identifier === joystickTouchId) {
-      updateJoystickKnob(touch.clientX, touch.clientY);
-    }
+    if (touch.identifier === joystickTouchId) updateJoystickKnob(touch.clientX, touch.clientY);
   }
 }
 
@@ -307,7 +364,6 @@ function updateJoystickKnob(clientX, clientY) {
   const kx = Math.cos(angle) * dist;
   const ky = Math.sin(angle) * dist;
   joystickKnob.style.transform = `translate(${kx}px, ${ky}px)`;
-
   joystickVector.x = kx / JOYSTICK_MAX_RADIUS;
   joystickVector.z = -ky / JOYSTICK_MAX_RADIUS;
 }
@@ -341,9 +397,7 @@ function onLookMove(e) {
 function onLookEnd(e) {
   e.preventDefault();
   for (const touch of e.changedTouches) {
-    if (touch.identifier === lookTouchId) {
-      lookTouchId = null;
-    }
+    if (touch.identifier === lookTouchId) lookTouchId = null;
   }
 }
 
@@ -354,50 +408,52 @@ function exitToMenu() {
 }
 
 /* ==========================================================
+   CAMERA MODE (first / third person) — universal button + key
+   ========================================================== */
+
+function toggleCameraMode() {
+  thirdPerson = !thirdPerson;
+  const offset = thirdPerson ? THIRD_PERSON_OFFSET : FIRST_PERSON_OFFSET;
+  camera.position.copy(offset);
+  cameraToggleBtn.classList.toggle('active', thirdPerson);
+  if (selfAvatar) selfAvatar.visible = thirdPerson;
+}
+
+cameraToggleBtn.addEventListener('click', toggleCameraMode);
+cameraToggleBtn.addEventListener('touchstart', (e) => { e.preventDefault(); toggleCameraMode(); }, { passive: false });
+
+/* ==========================================================
    FULLSCREEN CONTROL
    ========================================================== */
 
 function isCurrentlyFullscreen() {
   return !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
 }
-
 function requestFullscreenCompat(el) {
   if (el.requestFullscreen) return el.requestFullscreen();
   if (el.webkitRequestFullscreen) return el.webkitRequestFullscreen();
   if (el.msRequestFullscreen) return el.msRequestFullscreen();
   return Promise.reject(new Error('Fullscreen API unavailable'));
 }
-
 function exitFullscreenCompat() {
   if (document.exitFullscreen) return document.exitFullscreen();
   if (document.webkitExitFullscreen) return document.webkitExitFullscreen();
   if (document.msExitFullscreen) return document.msExitFullscreen();
   return Promise.reject(new Error('Fullscreen API unavailable'));
 }
-
 function updateFullscreenButtonVisibility() {
   fullscreenBtn.classList.toggle('hidden', isCurrentlyFullscreen());
 }
-
 function toggleFullscreen() {
-  if (!isCurrentlyFullscreen()) {
-    requestFullscreenCompat(document.documentElement).catch(() => {});
-  } else {
-    exitFullscreenCompat().catch(() => {});
-  }
+  if (!isCurrentlyFullscreen()) requestFullscreenCompat(document.documentElement).catch(() => {});
+  else exitFullscreenCompat().catch(() => {});
 }
-
 function setupFullscreenControl() {
   fullscreenBtn.addEventListener('click', toggleFullscreen);
-  fullscreenBtn.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    toggleFullscreen();
-  }, { passive: false });
-
+  fullscreenBtn.addEventListener('touchstart', (e) => { e.preventDefault(); toggleFullscreen(); }, { passive: false });
   document.addEventListener('fullscreenchange', updateFullscreenButtonVisibility);
   document.addEventListener('webkitfullscreenchange', updateFullscreenButtonVisibility);
   document.addEventListener('msfullscreenchange', updateFullscreenButtonVisibility);
-
   updateFullscreenButtonVisibility();
 }
 
@@ -490,9 +546,7 @@ function buildLighting() {
   scene.add(hemi);
   lights.hemi = hemi;
 
-  const positions = [
-    [-8, 4.2, -8], [8, 4.2, -8], [-8, 4.2, 8], [8, 4.2, 8], [0, 5, 0]
-  ];
+  const positions = [[-8, 4.2, -8], [8, 4.2, -8], [-8, 4.2, 8], [8, 4.2, 8], [0, 5, 0]];
   lights.points = [];
   positions.forEach((p, idx) => {
     const pl = new THREE.PointLight(0xffcf8a, 1.1, 16, 2);
@@ -513,7 +567,7 @@ function buildLighting() {
 }
 
 /* ==========================================================
-   ROOM: FLOOR / WALLS / CEILING
+   ROOM
    ========================================================== */
 
 function buildRoom() {
@@ -562,7 +616,6 @@ let pictureFrameId = 0;
 
 function createFrameWithImage(width, height) {
   const group = new THREE.Group();
-
   const frameMat = new THREE.MeshStandardMaterial({ color: 0x4a3216, roughness: 0.7 });
   const border = 0.06;
 
@@ -588,7 +641,7 @@ function createFrameWithImage(width, height) {
       picMesh.material = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.5 });
     },
     undefined,
-    () => { /* keep placeholder on failure */ }
+    () => {}
   );
 
   group.userData.isFrame = true;
@@ -707,7 +760,43 @@ function buildShelvesAndBooks() {
 }
 
 /* ==========================================================
-   SMART TV
+   SELF AVATAR (visible only in third-person)
+   ========================================================== */
+
+function buildAvatarMeshes(colorHex) {
+  const group = new THREE.Group();
+
+  const bodyMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.6 });
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 1.0, 4, 8), bodyMat);
+  body.position.y = 0.9;
+  body.castShadow = true;
+  group.add(body);
+
+  const headMat = new THREE.MeshStandardMaterial({ color: 0xe0b98f, roughness: 0.6 });
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), headMat);
+  head.position.y = 1.65;
+  head.castShadow = true;
+  group.add(head);
+
+  group.userData.bodyMesh = body;
+  return group;
+}
+
+function applyAvatarColor(group, colorHex) {
+  if (group.userData.bodyMesh) {
+    group.userData.bodyMesh.material.color.set(colorHex);
+  }
+}
+
+function buildSelfAvatar() {
+  selfAvatar = buildAvatarMeshes(myColor);
+  selfAvatar.position.set(0, -playerHeight, 0);
+  selfAvatar.visible = false;
+  yawObject.add(selfAvatar);
+}
+
+/* ==========================================================
+   SMART TV (with CSS3D perspective-correct screen)
    ========================================================== */
 
 function buildTV() {
@@ -717,44 +806,52 @@ function buildTV() {
 
   const metalMat = new THREE.MeshStandardMaterial({ color: 0x161616, roughness: 0.35, metalness: 0.75 });
 
-  const baseGeo = new THREE.BoxGeometry(0.7, 0.04, 0.3);
-  const base = new THREE.Mesh(baseGeo, metalMat);
+  const base = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.04, 0.3), metalMat);
   base.position.set(0, 0.02, 0);
   base.castShadow = true;
   base.receiveShadow = true;
   tvGroup.add(base);
 
-  const neckGeo = new THREE.BoxGeometry(0.08, 0.9, 0.06);
-  const neck = new THREE.Mesh(neckGeo, metalMat);
+  const neck = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.9, 0.06), metalMat);
   neck.position.set(0, 0.5, 0);
   neck.castShadow = true;
   tvGroup.add(neck);
 
-  const bezelGeo = new THREE.BoxGeometry(tvScreenWidth + 0.05, tvScreenHeight + 0.05, 0.045);
-  const bezel = new THREE.Mesh(bezelGeo, metalMat);
+  const bezel = new THREE.Mesh(new THREE.BoxGeometry(tvScreenWidth + 0.05, tvScreenHeight + 0.05, 0.045), metalMat);
   bezel.position.set(0, 1.28, 0);
   bezel.castShadow = true;
   tvGroup.add(bezel);
 
   const screenMat = new THREE.MeshStandardMaterial({
-    color: 0x030303,
-    emissive: 0x0c1220,
-    emissiveIntensity: 0.4,
-    roughness: 0.2,
-    metalness: 0.1
+    color: 0x030303, emissive: 0x0c1220, emissiveIntensity: 0.4, roughness: 0.2, metalness: 0.1
   });
-  const screenGeo = new THREE.PlaneGeometry(tvScreenWidth, tvScreenHeight);
-  tvScreenMesh = new THREE.Mesh(screenGeo, screenMat);
+  tvScreenMesh = new THREE.Mesh(new THREE.PlaneGeometry(tvScreenWidth, tvScreenHeight), screenMat);
   tvScreenMesh.position.set(0, 1.28, 0.024);
   tvGroup.add(tvScreenMesh);
 
-  const ledGeo = new THREE.SphereGeometry(0.012, 8, 8);
-  const ledMat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0x2ecc55, emissiveIntensity: 1.5 });
-  const led = new THREE.Mesh(ledGeo, ledMat);
+  const led = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 8),
+    new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0x2ecc55, emissiveIntensity: 1.5 }));
   led.position.set(0, 1.28 - tvScreenHeight / 2 - 0.02, 0.03);
   tvGroup.add(led);
 
   scene.add(tvGroup);
+
+  const CSS_SCALE = 0.0025;
+  tvVideoDiv = document.createElement('div');
+  tvVideoDiv.style.width = (tvScreenWidth / CSS_SCALE) + 'px';
+  tvVideoDiv.style.height = (tvScreenHeight / CSS_SCALE) + 'px';
+  tvVideoDiv.style.background = '#000';
+  tvVideoDiv.style.overflow = 'hidden';
+
+  tvCSSObject = new THREE.CSS3DObject(tvVideoDiv);
+  tvCSSObject.position.set(
+    tvGroup.position.x,
+    tvGroup.position.y + 1.28,
+    tvGroup.position.z + 0.026
+  );
+  tvCSSObject.rotation.set(0, tvGroup.rotation.y, 0);
+  tvCSSObject.scale.set(CSS_SCALE, CSS_SCALE, CSS_SCALE);
+  cssScene.add(tvCSSObject);
 }
 
 function updateTVInteraction() {
@@ -778,78 +875,17 @@ function updateTVInteraction() {
   }
 }
 
-function worldToScreenPoint(vec3) {
-  const p = vec3.clone().project(camera);
-  const halfW = window.innerWidth / 2;
-  const halfH = window.innerHeight / 2;
-  return {
-    x: p.x * halfW + halfW,
-    y: -p.y * halfH + halfH,
-    behind: p.z > 1 || p.z < -1
-  };
-}
-
-function updateTVOverlayPosition() {
-  if (!tvActive) {
-    tvScreenOverlay.style.display = 'none';
-    return;
-  }
-  if (currentPhase === 3) {
-    tvScreenOverlay.style.display = 'none';
-    return;
-  }
-
-  const hw = tvScreenWidth / 2;
-  const hh = tvScreenHeight / 2;
-  const corners = [
-    new THREE.Vector3(-hw, hh, 0),
-    new THREE.Vector3(hw, hh, 0),
-    new THREE.Vector3(-hw, -hh, 0),
-    new THREE.Vector3(hw, -hh, 0)
-  ].map(c => tvScreenMesh.localToWorld(c.clone()));
-
-  const projected = corners.map(worldToScreenPoint);
-  if (projected.some(p => p.behind)) {
-    tvScreenOverlay.style.display = 'none';
-    return;
-  }
-
-  const xs = projected.map(p => p.x);
-  const ys = projected.map(p => p.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const w = maxX - minX;
-  const h = maxY - minY;
-
-  if (w < 4 || h < 4 || minX > window.innerWidth || maxX < 0 || minY > window.innerHeight || maxY < 0) {
-    tvScreenOverlay.style.display = 'none';
-    return;
-  }
-
-  tvScreenOverlay.style.display = 'block';
-  tvScreenOverlay.style.left = minX + 'px';
-  tvScreenOverlay.style.top = minY + 'px';
-  tvScreenOverlay.style.width = w + 'px';
-  tvScreenOverlay.style.height = h + 'px';
-}
-
 /* ---------------------- TV modal & video loading ---------------------- */
 
 function openTVModal() {
   tvError.textContent = '';
   tvModal.classList.add('visible');
-  if (!isMobile && pointerLocked) {
-    document.exitPointerLock();
-  }
+  if (!isMobile && pointerLocked) document.exitPointerLock();
 }
 
 function closeTVModal() {
   tvModal.classList.remove('visible');
-  if (!isMobile && gameStarted) {
-    renderer.domElement.requestPointerLock();
-  }
+  if (!isMobile && gameStarted && !phoneOpen) renderer.domElement.requestPointerLock();
 }
 
 function extractYouTubeId(url) {
@@ -865,12 +901,10 @@ function extractYouTubeId(url) {
   }
   return null;
 }
-
 function extractRutubeId(url) {
   const m = url.match(/rutube\.ru\/(?:video|play\/embed)\/([a-zA-Z0-9]+)/);
   return m ? m[1] : null;
 }
-
 function extractDzenId(url) {
   const m = url.match(/dzen\.ru\/(?:video\/watch|embed)\/([a-zA-Z0-9_-]+)/);
   return m ? m[1] : null;
@@ -881,41 +915,37 @@ function clearTVPlayer() {
     try { ytPlayer.destroy(); } catch (e) {}
     ytPlayer = null;
   }
-  tvScreenOverlay.innerHTML = '';
-  tvUsingGenericIframe = false;
+  tvVideoDiv.innerHTML = '';
 }
 
 function handleTVPlayRequest() {
   const url = tvUrlInput.value.trim();
   tvError.textContent = '';
   tvNote.textContent = '';
+  if (!url) { tvError.textContent = 'Вставьте ссылку на видео'; return; }
+  loadVideoFromUrl(url, true);
+}
 
-  if (!url) {
-    tvError.textContent = 'Вставьте ссылку на видео';
-    return;
-  }
-
+function loadVideoFromUrl(url, broadcast) {
+  tvError.textContent = '';
   const ytId = extractYouTubeId(url);
-  if (ytId) {
-    loadYouTubeVideo(ytId);
-    return;
-  }
+  if (ytId) { loadYouTubeVideo(ytId); lastTVUrl = url; if (broadcast) broadcastTVState('play', url); return; }
 
   const rtId = extractRutubeId(url);
   if (rtId) {
-    loadGenericIframe(
-      `https://rutube.ru/play/embed/${rtId}`,
-      'Rutube не предоставляет публичный API для смены качества — воспроизведение в автоматическом качестве, выбранном плеером.'
-    );
+    loadGenericIframe(`https://rutube.ru/play/embed/${rtId}`,
+      'Rutube не предоставляет публичный API для смены качества — воспроизведение в автоматическом качестве.');
+    lastTVUrl = url;
+    if (broadcast) broadcastTVState('play', url);
     return;
   }
 
   const dzId = extractDzenId(url);
   if (dzId) {
-    loadGenericIframe(
-      `https://dzen.ru/embed/${dzId}`,
-      'Дзен не предоставляет публичный API для смены качества — воспроизведение в автоматическом качестве, выбранном плеером.'
-    );
+    loadGenericIframe(`https://dzen.ru/embed/${dzId}`,
+      'Дзен не предоставляет публичный API для смены качества — воспроизведение в автоматическом качестве.');
+    lastTVUrl = url;
+    if (broadcast) broadcastTVState('play', url);
     return;
   }
 
@@ -930,6 +960,7 @@ function activateTVScreen() {
 function loadYouTubeVideo(videoId) {
   clearTVPlayer();
   activateTVScreen();
+  tvUrlInput.value = 'https://www.youtube.com/watch?v=' + videoId;
 
   tvQualitySelect.disabled = true;
   tvQualitySelect.innerHTML = '<option value="auto">Загрузка...</option>';
@@ -938,7 +969,7 @@ function loadYouTubeVideo(videoId) {
   playerDiv.id = 'yt-player-slot-' + Date.now();
   playerDiv.style.width = '100%';
   playerDiv.style.height = '100%';
-  tvScreenOverlay.appendChild(playerDiv);
+  tvVideoDiv.appendChild(playerDiv);
 
   if (window.YT && window.YT.Player) {
     createYTPlayer(videoId, playerDiv.id);
@@ -953,23 +984,19 @@ function createYTPlayer(videoId, divId) {
     videoId: videoId,
     width: '100%',
     height: '100%',
-    playerVars: {
-      autoplay: 1,
-      controls: 0,
-      disablekb: 1,
-      rel: 0,
-      modestbranding: 1,
-      playsinline: 1
-    },
+    playerVars: { autoplay: 1, controls: 0, disablekb: 1, rel: 0, modestbranding: 1, playsinline: 1 },
     events: {
       onReady: (e) => {
         e.target.playVideo();
         populateQualityOptions(e.target);
-        tvNote.textContent = 'Видео воспроизводится на экране в библиотеке.';
+        tvNote.textContent = 'Видео воспроизводится на экране в библиотеке и видно всем игрокам в комнате.';
       },
-      onError: () => {
-        tvError.textContent = 'Не удалось загрузить это видео YouTube. Проверьте ссылку.';
-      }
+      onPlaybackQualityChange: (e) => {
+        if (tvQualitySelect.querySelector(`option[value="${e.data}"]`)) {
+          tvQualitySelect.value = e.data;
+        }
+      },
+      onError: () => { tvError.textContent = 'Не удалось загрузить это видео YouTube. Проверьте ссылку.'; }
     }
   });
 }
@@ -979,15 +1006,8 @@ function populateQualityOptions(player) {
   try { levels = player.getAvailableQualityLevels() || []; } catch (e) { levels = []; }
 
   const labels = {
-    hd2160: '4K (2160p)',
-    hd1440: '1440p',
-    hd1080: '1080p',
-    hd720: '720p',
-    large: '480p',
-    medium: '360p',
-    small: '240p',
-    tiny: '144p',
-    auto: 'Автоматически'
+    hd2160: '4K (2160p)', hd1440: '1440p', hd1080: '1080p', hd720: '720p',
+    large: '480p', medium: '360p', small: '240p', tiny: '144p', auto: 'Автоматически'
   };
 
   tvQualitySelect.innerHTML = '';
@@ -1004,10 +1024,10 @@ function populateQualityOptions(player) {
       tvQualitySelect.appendChild(opt);
     });
     tvQualitySelect.disabled = false;
-    tvNote.textContent = 'Качество можно менять вручную (YouTube может переопределить выбор в зависимости от скорости соединения).';
+    tvNote.textContent = 'Качество можно менять вручную. Учтите: YouTube использует адаптивный битрейт и часто сам переключает качество в зависимости от скорости соединения — это ограничение самого YouTube, а не сайта.';
   } else {
     tvQualitySelect.disabled = true;
-    tvNote.textContent = 'YouTube не предоставил список доступных вариантов качества для этого видео — используется автоматический режим.';
+    tvNote.textContent = 'YouTube не предоставил список вариантов качества для этого видео — используется автоматический режим.';
   }
 }
 
@@ -1020,33 +1040,36 @@ tvQualitySelect.addEventListener('change', () => {
 function loadGenericIframe(src, note) {
   clearTVPlayer();
   activateTVScreen();
-  tvUsingGenericIframe = true;
+  tvUrlInput.value = src;
 
   const iframe = document.createElement('iframe');
   iframe.src = src;
+  iframe.style.width = '100%';
+  iframe.style.height = '100%';
+  iframe.style.border = 'none';
   iframe.setAttribute('allow', 'autoplay; fullscreen');
   iframe.setAttribute('allowfullscreen', 'true');
-  tvScreenOverlay.appendChild(iframe);
+  tvVideoDiv.appendChild(iframe);
 
   tvQualitySelect.innerHTML = '<option value="auto">Недоступно для этой платформы</option>';
   tvQualitySelect.disabled = true;
-  tvNote.textContent = note;
+  tvNote.textContent = note + ' Видео видно всем игрокам в комнате.';
 }
 
-function stopTV() {
+function stopTV(broadcast) {
   clearTVPlayer();
   tvActive = false;
   tvScreenMesh.visible = true;
-  tvScreenOverlay.style.display = 'none';
   tvUrlInput.value = '';
+  lastTVUrl = null;
   tvQualitySelect.innerHTML = '<option value="auto">Автоматически</option>';
   tvQualitySelect.disabled = true;
   tvError.textContent = '';
   tvNote.textContent = '';
+  if (broadcast) broadcastTVState('stop', null);
 }
 
 window.onYouTubeIframeAPIReady = function () {
-  ytApiReady = true;
   if (pendingYouTubeLoad) {
     createYTPlayer(pendingYouTubeLoad.videoId, pendingYouTubeLoad.divId);
     pendingYouTubeLoad = null;
@@ -1054,14 +1077,119 @@ window.onYouTubeIframeAPIReady = function () {
 };
 
 tvPlayBtn.addEventListener('click', handleTVPlayRequest);
-tvStopBtn.addEventListener('click', stopTV);
+tvStopBtn.addEventListener('click', () => stopTV(true));
 tvCloseBtn.addEventListener('click', closeTVModal);
-tvUrlInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') handleTVPlayRequest();
+tvUrlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') handleTVPlayRequest(); });
+
+/* ==========================================================
+   PHONE (toggleable prop + working browser panel)
+   ========================================================== */
+
+function buildPhoneProp() {
+  phoneProp = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x161616, roughness: 0.3, metalness: 0.6 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.33, 0.015), bodyMat);
+  phoneProp.add(body);
+
+  const screenMat = new THREE.MeshStandardMaterial({ color: 0x0a1830, emissive: 0x1c4a7a, emissiveIntensity: 0.6, roughness: 0.2 });
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.135, 0.29), screenMat);
+  screen.position.z = 0.009;
+  phoneProp.add(screen);
+
+  phoneProp.position.set(0.22, -0.28, -0.42);
+  phoneProp.rotation.set(-0.15, -0.2, 0.05);
+  phoneProp.visible = false;
+  camera.add(phoneProp);
+}
+
+function togglePhone() {
+  phoneOpen = !phoneOpen;
+  phonePanel.classList.toggle('visible', phoneOpen);
+  phoneProp.visible = phoneOpen;
+  phoneToggleBtn.classList.toggle('active', phoneOpen);
+
+  if (phoneOpen) {
+    if (!isMobile && pointerLocked) document.exitPointerLock();
+  } else {
+    if (!isMobile && gameStarted && !tvModal.classList.contains('visible')) {
+      renderer.domElement.requestPointerLock();
+    }
+  }
+}
+
+function navigatePhoneBrowser() {
+  let value = phoneUrlInput.value.trim();
+  if (!value) return;
+  if (!/^https?:\/\//i.test(value)) {
+    if (value.includes('.') && !value.includes(' ')) {
+      value = 'https://' + value;
+    } else {
+      value = 'https://www.google.com/search?igu=1&q=' + encodeURIComponent(value);
+    }
+  }
+  phoneIframe.src = value;
+}
+
+phoneToggleBtn.addEventListener('click', togglePhone);
+phoneToggleBtn.addEventListener('touchstart', (e) => { e.preventDefault(); togglePhone(); }, { passive: false });
+phoneCloseBtn.addEventListener('click', togglePhone);
+phoneGoBtn.addEventListener('click', navigatePhoneBrowser);
+phoneUrlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') navigatePhoneBrowser(); });
+
+/* ==========================================================
+   EMOTES
+   ========================================================== */
+
+const EMOTE_ICONS = { wave: '👋', like: '👍', cheer: '🎉' };
+
+function makeEmoteSprite(icon) {
+  const c = document.createElement('canvas');
+  c.width = 96; c.height = 96;
+  const ctx = c.getContext('2d');
+  ctx.font = '64px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(icon, 48, 52);
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(0.5, 0.5, 1);
+  sprite.position.y = 2.45;
+  return sprite;
+}
+
+function showEmoteOnGroup(group, emoteId) {
+  const icon = EMOTE_ICONS[emoteId] || '❔';
+  if (group.userData.emoteSprite) {
+    group.remove(group.userData.emoteSprite);
+    group.userData.emoteSprite = null;
+  }
+  const sprite = makeEmoteSprite(icon);
+  group.add(sprite);
+  group.userData.emoteSprite = sprite;
+
+  if (group.userData.emoteTimeout) clearTimeout(group.userData.emoteTimeout);
+  group.userData.emoteTimeout = setTimeout(() => {
+    group.remove(sprite);
+    if (group.userData.emoteSprite === sprite) group.userData.emoteSprite = null;
+  }, 2500);
+}
+
+function triggerEmote(emoteId) {
+  if (!gameStarted) return;
+  showEmoteOnGroup(selfAvatar, emoteId);
+  Object.values(connections).forEach(conn => {
+    if (conn.open) conn.send({ type: 'emote', emote: emoteId });
+  });
+}
+
+emoteButtons.forEach(btn => {
+  btn.addEventListener('click', () => triggerEmote(btn.dataset.emote));
+  btn.addEventListener('touchstart', (e) => { e.preventDefault(); triggerEmote(btn.dataset.emote); }, { passive: false });
 });
 
 /* ==========================================================
-   MOVEMENT (UNIFIED: KEYBOARD + JOYSTICK) + JUMP
+   MOVEMENT + JUMP
    ========================================================== */
 
 function getMoveInput() {
@@ -1082,7 +1210,6 @@ function updateMovement(delta) {
 
   const speed = 4.2;
   const yaw = yawObject.rotation.y;
-
   const forwardX = -Math.sin(yaw);
   const forwardZ = -Math.cos(yaw);
   const rightX = Math.cos(yaw);
@@ -1100,7 +1227,7 @@ function updateMovement(delta) {
 }
 
 function triggerJump() {
-  if (isGrounded && gameStarted && !tvModal.classList.contains('visible')) {
+  if (isGrounded && gameStarted && !tvModal.classList.contains('visible') && !phoneOpen) {
     verticalVelocity = JUMP_SPEED;
     isGrounded = false;
   }
@@ -1119,7 +1246,7 @@ function updateVerticalPhysics(delta) {
 }
 
 /* ==========================================================
-   SIGNALING (MQTT presence broadcast + direct invite-link fallback)
+   MULTIPLAYER: PeerJS (with TURN relay) + MQTT presence + invite link
    ========================================================== */
 
 function initMultiplayer() {
@@ -1133,14 +1260,17 @@ function initMultiplayer() {
     config: {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
       ]
     }
   });
 
   myPeer.on('open', (id) => {
     myPeerId = id;
-    connectionStatus.textContent = 'Подключено. Ваш ID: ' + id.substring(0, 8) + '...';
+    connectionStatus.textContent = 'PeerJS подключен. Ваш ID: ' + id.substring(0, 8) + '...';
     setupInviteLink(id);
     connectSignaling();
     tryConnectFromInviteParam();
@@ -1152,7 +1282,12 @@ function initMultiplayer() {
 
   myPeer.on('error', (err) => {
     console.warn('PeerJS error:', err);
-    connectionStatus.textContent = 'Ошибка PeerJS: ' + (err && err.type ? err.type : 'неизвестна');
+    connectionStatus.textContent = 'Ошибка PeerJS: ' + (err && err.type ? err.type : 'неизвестна') + '. Попробуйте обновить страницу.';
+  });
+
+  myPeer.on('disconnected', () => {
+    connectionStatus.textContent = 'Соединение с сервером PeerJS потеряно, переподключение...';
+    try { myPeer.reconnect(); } catch (e) {}
   });
 }
 
@@ -1166,6 +1301,7 @@ function tryConnectFromInviteParam() {
   const params = new URLSearchParams(window.location.search);
   const targetId = params.get('peer');
   if (targetId && targetId !== myPeerId && !connections[targetId]) {
+    connectionStatus.textContent = 'Подключение напрямую к приглашённому игроку...';
     const conn = myPeer.connect(targetId, { reliable: true, metadata: { nickname: nickname } });
     setupConnection(conn);
   }
@@ -1173,19 +1309,18 @@ function tryConnectFromInviteParam() {
 
 function connectSignaling() {
   try {
-    const shortId = myPeerId.substring(0, 12).replace(/[^a-zA-Z0-9]/g, '');
+    const shortId = myPeerId.substring(0, 10).replace(/[^a-zA-Z0-9]/g, '');
     mqttClient = mqtt.connect(MQTT_BROKER_URL, {
-      clientId: 'lib3d' + shortId + Math.floor(Math.random() * 1000),
+      clientId: 'l3d' + shortId + Math.floor(Math.random() * 1000),
       clean: true,
       reconnectPeriod: 4000,
       connectTimeout: 10000
     });
 
     mqttClient.on('connect', () => {
-      connectionStatus.textContent = 'Сеть активна. Ваш ID: ' + myPeerId.substring(0, 8) + '...';
+      connectionStatus.textContent = 'Сеть активна. Игроков рядом: ' + Object.keys(remotePlayers).length;
       mqttClient.subscribe(PRESENCE_TOPIC);
       publishPresence();
-
       if (!signalReady) {
         signalReady = true;
         setInterval(publishPresence, 3000);
@@ -1193,37 +1328,30 @@ function connectSignaling() {
       }
     });
 
-    mqttClient.on('reconnect', () => {
-      connectionStatus.textContent = 'Переподключение к сети...';
-    });
+    mqttClient.on('reconnect', () => { connectionStatus.textContent = 'Переподключение к сети...'; });
 
     mqttClient.on('message', (topic, payload) => {
       if (topic !== PRESENCE_TOPIC) return;
-      try {
-        const msg = JSON.parse(payload.toString());
-        handlePresenceMessage(msg);
-      } catch (e) { /* ignore malformed */ }
+      try { handlePresenceMessage(JSON.parse(payload.toString())); } catch (e) {}
     });
 
     mqttClient.on('error', (err) => {
       console.warn('MQTT signaling error:', err);
-      connectionStatus.textContent = 'Общий сервер недоступен. Используйте ссылку-приглашение ниже.';
+      connectionStatus.textContent = 'Общий сервер поиска игроков недоступен. Используйте ссылку-приглашение ниже — она работает напрямую.';
     });
   } catch (e) {
     console.warn('MQTT unavailable:', e);
-    connectionStatus.textContent = 'Мультиплеер через общий сервер недоступен. Используйте ссылку-приглашение.';
+    connectionStatus.textContent = 'Автопоиск игроков недоступен. Используйте ссылку-приглашение ниже.';
   }
 }
 
 function publishPresence() {
   if (!mqttClient || !mqttClient.connected || !myPeerId) return;
-  const payload = JSON.stringify({ peerId: myPeerId, nickname: nickname, ts: Date.now() });
-  mqttClient.publish(PRESENCE_TOPIC, payload);
+  mqttClient.publish(PRESENCE_TOPIC, JSON.stringify({ peerId: myPeerId, nickname: nickname, ts: Date.now() }));
 }
 
 function handlePresenceMessage(msg) {
   if (!msg.peerId || msg.peerId === myPeerId) return;
-
   lastSeenPeers[msg.peerId] = Date.now();
 
   if (!connections[msg.peerId]) {
@@ -1232,15 +1360,12 @@ function handlePresenceMessage(msg) {
       setupConnection(conn);
     }
   }
-
-  ensureRemotePlayer(msg.peerId, msg.nickname);
-  updatePlayersCount();
 }
 
 function prunePeers() {
   const now = Date.now();
   Object.keys(lastSeenPeers).forEach(peerId => {
-    if (now - lastSeenPeers[peerId] > 12000) {
+    if (now - lastSeenPeers[peerId] > 15000) {
       delete lastSeenPeers[peerId];
       removeRemotePlayer(peerId);
       if (connections[peerId]) {
@@ -1252,17 +1377,18 @@ function prunePeers() {
   });
 }
 
-/* ==========================================================
-   PEERJS DATA CHANNELS
-   ========================================================== */
-
 function setupConnection(conn) {
   connections[conn.peer] = conn;
 
   conn.on('open', () => {
-    conn.send({ type: 'hello', nickname: nickname });
+    conn.send({ type: 'hello', nickname: nickname, color: myColor });
     lastSeenPeers[conn.peer] = Date.now();
     updatePlayersCount();
+    connectionStatus.textContent = 'Подключено к игроку. Игроков рядом: ' + Object.keys(remotePlayers).length;
+
+    if (tvActive && lastTVUrl) {
+      conn.send({ type: 'tv', action: 'play', url: lastTVUrl });
+    }
   });
 
   conn.on('data', (data) => {
@@ -1276,7 +1402,8 @@ function setupConnection(conn) {
     updatePlayersCount();
   });
 
-  conn.on('error', () => {
+  conn.on('error', (err) => {
+    console.warn('DataConnection error:', err);
     removeRemotePlayer(conn.peer);
     delete connections[conn.peer];
     updatePlayersCount();
@@ -1287,19 +1414,36 @@ function handlePeerData(peerId, data) {
   if (!data || !data.type) return;
 
   if (data.type === 'hello') {
-    ensureRemotePlayer(peerId, data.nickname);
+    ensureRemotePlayer(peerId, data.nickname, data.color);
     updatePlayersCount();
   } else if (data.type === 'pose') {
-    ensureRemotePlayer(peerId, data.nickname);
+    ensureRemotePlayer(peerId, data.nickname, data.color);
     const rp = remotePlayers[peerId];
     if (rp) {
       rp.targetPos.set(data.x, data.y, data.z);
       rp.targetRotY = data.rotY;
     }
+  } else if (data.type === 'emote') {
+    const rp = remotePlayers[peerId];
+    if (rp) showEmoteOnGroup(rp.group, data.emote);
+  } else if (data.type === 'tv') {
+    if (data.action === 'play' && data.url) {
+      loadVideoFromUrl(data.url, false);
+    } else if (data.action === 'stop') {
+      stopTV(false);
+    }
   }
 }
 
-function makeNicknameSprite(text) {
+function ensureRemotePlayer(peerId, nick, color) {
+  if (remotePlayers[peerId]) {
+    if (nick) remotePlayers[peerId].nickname = nick;
+    if (color) applyAvatarColor(remotePlayers[peerId].group, color);
+    return;
+  }
+
+  const group = buildAvatarMeshes(color || '#3a6ea5');
+
   const c = document.createElement('canvas');
   c.width = 256; c.height = 64;
   const ctx = c.getContext('2d');
@@ -1309,38 +1453,11 @@ function makeNicknameSprite(text) {
   ctx.fillStyle = '#f0e6c8';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text.substring(0, 16), c.width / 2, c.height / 2);
+  ctx.fillText((nick || 'Гость').substring(0, 16), c.width / 2, c.height / 2);
   const tex = new THREE.CanvasTexture(c);
-  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
-  const sprite = new THREE.Sprite(mat);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
   sprite.scale.set(1.2, 0.3, 1);
   sprite.position.y = 2.05;
-  return sprite;
-}
-
-function ensureRemotePlayer(peerId, nick) {
-  if (remotePlayers[peerId]) {
-    if (nick && remotePlayers[peerId].nickname !== nick) {
-      remotePlayers[peerId].nickname = nick;
-    }
-    return;
-  }
-
-  const group = new THREE.Group();
-
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x3a6ea5, roughness: 0.6 });
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 1.0, 4, 8), bodyMat);
-  body.position.y = 0.9;
-  body.castShadow = true;
-  group.add(body);
-
-  const headMat = new THREE.MeshStandardMaterial({ color: 0xe0b98f, roughness: 0.6 });
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), headMat);
-  head.position.y = 1.65;
-  head.castShadow = true;
-  group.add(head);
-
-  const sprite = makeNicknameSprite(nick || 'Гость');
   group.add(sprite);
 
   group.position.set(0, playerHeight, 0);
@@ -1365,16 +1482,16 @@ function removeRemotePlayer(peerId) {
 function broadcastPose() {
   if (!myPeer || !myPeerId) return;
   const payload = {
-    type: 'pose',
-    nickname: nickname,
-    x: yawObject.position.x,
-    y: yawObject.position.y,
-    z: yawObject.position.z,
+    type: 'pose', nickname: nickname, color: myColor,
+    x: yawObject.position.x, y: yawObject.position.y, z: yawObject.position.z,
     rotY: yawObject.rotation.y
   };
-  Object.values(connections).forEach(conn => {
-    if (conn.open) conn.send(payload);
-  });
+  Object.values(connections).forEach(conn => { if (conn.open) conn.send(payload); });
+}
+
+function broadcastTVState(action, url) {
+  const payload = { type: 'tv', action, url };
+  Object.values(connections).forEach(conn => { if (conn.open) conn.send(payload); });
 }
 
 function updateRemotePlayers(delta) {
@@ -1392,7 +1509,7 @@ function updatePlayersCount() {
 }
 
 /* ==========================================================
-   TIMER & PHASES
+   TIMER & PHASES (no reset — stays normal forever after glitch)
    ========================================================== */
 
 function formatTime(t) {
@@ -1403,7 +1520,6 @@ function formatTime(t) {
 
 function updateTimer(delta) {
   if (timerFrozen) return;
-
   elapsedTime += delta;
   timerValue.textContent = formatTime(elapsedTime);
 
@@ -1418,14 +1534,10 @@ function updateTimer(delta) {
       triggerGlitchApocalypse();
     }
   } else {
-    if (currentPhase === 3) {
-      endGlitchApocalypse();
-    }
+    if (currentPhase === 3) endGlitchApocalypse();
     currentPhase = 4;
   }
 }
-
-/* ---------------------- Phase 2: strange bugs ---------------------- */
 
 function applyPhase2Effects(t) {
   const progress = Math.min(1, (elapsedTime - PHASE1_END) / (PHASE2_END - PHASE1_END));
@@ -1436,9 +1548,7 @@ function applyPhase2Effects(t) {
     const baseY = obj.userData.baseY !== undefined ? obj.userData.baseY : obj.position.y;
     const baseRotZ = obj.userData.baseRotZ || 0;
 
-    if (Math.random() < 0.002 * intensity) {
-      obj.userData.levitate = !obj.userData.levitate;
-    }
+    if (Math.random() < 0.002 * intensity) obj.userData.levitate = !obj.userData.levitate;
 
     const wobble = Math.sin(t * 3 + phase) * 0.02 * intensity;
     const spin = Math.sin(t * 5 + phase) * 0.15 * intensity;
@@ -1449,16 +1559,13 @@ function applyPhase2Effects(t) {
       obj.position.y = baseY + wobble;
     }
     obj.rotation.z = baseRotZ + spin;
-    if (obj.userData.isFrame) {
-      obj.rotation.y = Math.sin(t * 2 + phase) * 0.3 * intensity;
-    }
+    if (obj.userData.isFrame) obj.rotation.y = Math.sin(t * 2 + phase) * 0.3 * intensity;
   });
 
   lights.points.forEach((entry) => {
     if (Math.random() < 0.01 * intensity) {
-      const shiftedHue = Math.random();
       const c = new THREE.Color();
-      c.setHSL(shiftedHue, 0.8, 0.6);
+      c.setHSL(Math.random(), 0.8, 0.6);
       entry.light.color = c;
       entry.bulb.material.emissive = c;
     } else if (Math.random() < 0.01 * intensity) {
@@ -1483,8 +1590,6 @@ function resetAnimatedObjects() {
   });
 }
 
-/* ---------------------- Phase 3: glitch apocalypse ---------------------- */
-
 function triggerGlitchApocalypse() {
   glitchCanvas.style.display = 'block';
   glitchCanvas.width = window.innerWidth;
@@ -1507,8 +1612,7 @@ function renderGlitchOverlay() {
   glitchCtx.fillStyle = `rgba(${Math.random() * 255 | 0}, 0, ${Math.random() * 255 | 0}, 0.15)`;
   glitchCtx.fillRect(0, 0, w, h);
 
-  const sliceCount = 24;
-  for (let i = 0; i < sliceCount; i++) {
+  for (let i = 0; i < 24; i++) {
     const y = Math.random() * h;
     const sh = Math.random() * 30 + 2;
     const dx = (Math.random() - 0.5) * 60;
@@ -1538,8 +1642,6 @@ function renderGlitchOverlay() {
   }
 }
 
-/* ---------------------- Web Audio glitch noise ---------------------- */
-
 function playGlitchNoise() {
   try {
     glitchAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1547,9 +1649,7 @@ function playGlitchNoise() {
     const bufferSize = ctx.sampleRate * 5;
     const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
     const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = (Math.random() * 2 - 1) * (0.4 + 0.3 * Math.sin(i * 0.001));
-    }
+    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * (0.4 + 0.3 * Math.sin(i * 0.001));
     const noiseSource = ctx.createBufferSource();
     noiseSource.buffer = buffer;
 
@@ -1577,23 +1677,16 @@ function playGlitchNoise() {
     glitchAudioCtx._nodes = { noiseSource, lfo, gain };
 
     setTimeout(() => {
-      try {
-        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3);
-      } catch (e) {}
+      try { gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3); } catch (e) {}
     }, 4700);
-  } catch (e) {
-    console.warn('Web Audio unavailable:', e);
-  }
+  } catch (e) { console.warn('Web Audio unavailable:', e); }
 }
 
 function stopGlitchNoise() {
   if (glitchAudioCtx) {
     try {
       const nodes = glitchAudioCtx._nodes;
-      if (nodes) {
-        nodes.noiseSource.stop();
-        nodes.lfo.stop();
-      }
+      if (nodes) { nodes.noiseSource.stop(); nodes.lfo.stop(); }
       glitchAudioCtx.close();
     } catch (e) {}
     glitchAudioCtx = null;
@@ -1610,30 +1703,26 @@ function animate() {
   const t = clock.elapsedTime;
 
   if (gameStarted) {
-    const controlsActive = (isMobile || pointerLocked) && !tvModal.classList.contains('visible');
-    if (controlsActive) {
-      updateMovement(delta);
-    }
+    const uiBlocking = tvModal.classList.contains('visible') || phoneOpen;
+    const controlsActive = (isMobile || pointerLocked) && !uiBlocking;
+    if (controlsActive) updateMovement(delta);
     updateVerticalPhysics(delta);
     updateTimer(delta);
     updateTVInteraction();
-    updateTVOverlayPosition();
 
-    if (currentPhase === 2) {
-      applyPhase2Effects(t);
-    } else if (currentPhase === 3) {
-      renderGlitchOverlay();
-    }
+    if (currentPhase === 2) applyPhase2Effects(t);
+    else if (currentPhase === 3) renderGlitchOverlay();
 
-    lights.points.forEach(entry => {
-      entry.bulb.position.copy(entry.light.position);
-    });
+    tvCSSObject.visible = !(currentPhase === 3);
+
+    lights.points.forEach(entry => { entry.bulb.position.copy(entry.light.position); });
 
     broadcastPoseThrottled(delta);
     updateRemotePlayers(delta);
   }
 
   renderer.render(scene, camera);
+  cssRenderer.render(cssScene, camera);
 }
 
 let poseAccumulator = 0;
@@ -1651,10 +1740,7 @@ function broadcastPoseThrottled(delta) {
 
 function startGame() {
   const value = nicknameInput.value.trim();
-  if (!value) {
-    startError.textContent = 'Пожалуйста, введите никнейм';
-    return;
-  }
+  if (!value) { startError.textContent = 'Пожалуйста, введите никнейм'; return; }
   nickname = value;
   startError.textContent = '';
 
@@ -1664,21 +1750,16 @@ function startGame() {
   gameStarted = true;
   clock.start();
 
-  if (!isMobile) {
-    renderer.domElement.requestPointerLock();
-  }
+  if (!isMobile) renderer.domElement.requestPointerLock();
 
-  if (!myPeer) {
-    initMultiplayer();
-  } else if (mqttClient) {
+  if (myPeer && myPeer.open) {
     publishPresence();
+    Object.values(connections).forEach(conn => { if (conn.open) conn.send({ type: 'hello', nickname, color: myColor }); });
   }
 }
 
 startBtn.addEventListener('click', startGame);
-nicknameInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') startGame();
-});
+nicknameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') startGame(); });
 
 inviteCopyBtn.addEventListener('click', () => {
   inviteLinkInput.select();
@@ -1686,20 +1767,16 @@ inviteCopyBtn.addEventListener('click', () => {
     navigator.clipboard.writeText(inviteLinkInput.value);
     inviteCopyBtn.textContent = 'Скопировано!';
     setTimeout(() => { inviteCopyBtn.textContent = 'Копировать'; }, 1500);
-  } catch (e) {
-    document.execCommand('copy');
-  }
+  } catch (e) { document.execCommand('copy'); }
 });
 
 /* ==========================================================
    BOOTSTRAP
    ========================================================== */
 
+buildAvatarColorPicker();
 initScene();
 setupFullscreenControl();
 onWindowResize();
 animate();
-
-/* Begin peer/signaling setup immediately so the invite link and
-   your own ID are available even before pressing "start". */
 initMultiplayer();
