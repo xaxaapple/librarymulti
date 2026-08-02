@@ -5,7 +5,6 @@
 /* ---------------------- Global State ---------------------- */
 
 let scene, camera, renderer;
-let cssScene, cssRenderer;
 let clock = new THREE.Clock();
 let raycaster = new THREE.Raycaster();
 
@@ -69,7 +68,6 @@ let tvScreenHeight = 0.96;
 let tvActive = false;
 let tvNearPlayer = false;
 let tvVideoDiv = null;
-let tvCSSObject = null;
 let ytPlayer = null;
 let pendingYouTubeLoad = null;
 let lastTVUrl = null;
@@ -108,6 +106,7 @@ const cameraToggleBtn = document.getElementById('camera-toggle-btn');
 const phoneToggleBtn = document.getElementById('phone-toggle-btn');
 const emoteButtons = document.querySelectorAll('.emote-btn');
 
+const tvScreenOverlay = document.getElementById('tv-screen-overlay');
 const tvModal = document.getElementById('tv-modal');
 const tvUrlInput = document.getElementById('tv-url-input');
 const tvPlayBtn = document.getElementById('tv-play-btn');
@@ -184,16 +183,6 @@ function initScene() {
   renderer.domElement.id = 'app-canvas';
   document.body.appendChild(renderer.domElement);
 
-  cssScene = new THREE.Scene();
-  cssRenderer = new THREE.CSS3DRenderer();
-  cssRenderer.setSize(window.innerWidth, window.innerHeight);
-  cssRenderer.domElement.style.position = 'fixed';
-  cssRenderer.domElement.style.top = '0';
-  cssRenderer.domElement.style.left = '0';
-  cssRenderer.domElement.style.zIndex = '12';
-  cssRenderer.domElement.style.pointerEvents = 'none';
-  document.body.appendChild(cssRenderer.domElement);
-
   buildLighting();
   buildRoom();
   buildShelvesAndBooks();
@@ -214,7 +203,6 @@ function onWindowResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  cssRenderer.setSize(window.innerWidth, window.innerHeight);
   glitchCanvas.width = window.innerWidth;
   glitchCanvas.height = window.innerHeight;
 }
@@ -796,7 +784,7 @@ function buildSelfAvatar() {
 }
 
 /* ==========================================================
-   SMART TV (with CSS3D perspective-correct screen)
+   SMART TV (screen-space video overlay, projected each frame)
    ========================================================== */
 
 function buildTV() {
@@ -836,22 +824,7 @@ function buildTV() {
 
   scene.add(tvGroup);
 
-  const CSS_SCALE = 0.0025;
-  tvVideoDiv = document.createElement('div');
-  tvVideoDiv.style.width = (tvScreenWidth / CSS_SCALE) + 'px';
-  tvVideoDiv.style.height = (tvScreenHeight / CSS_SCALE) + 'px';
-  tvVideoDiv.style.background = '#000';
-  tvVideoDiv.style.overflow = 'hidden';
-
-  tvCSSObject = new THREE.CSS3DObject(tvVideoDiv);
-  tvCSSObject.position.set(
-    tvGroup.position.x,
-    tvGroup.position.y + 1.28,
-    tvGroup.position.z + 0.026
-  );
-  tvCSSObject.rotation.set(0, tvGroup.rotation.y, 0);
-  tvCSSObject.scale.set(CSS_SCALE, CSS_SCALE, CSS_SCALE);
-  cssScene.add(tvCSSObject);
+  tvVideoDiv = tvScreenOverlay;
 }
 
 function updateTVInteraction() {
@@ -873,6 +846,59 @@ function updateTVInteraction() {
       tvInteractBtn.classList.toggle('visible', near);
     }
   }
+}
+
+function worldToScreenPoint(vec3) {
+  const p = vec3.clone().project(camera);
+  const halfW = window.innerWidth / 2;
+  const halfH = window.innerHeight / 2;
+  return {
+    x: p.x * halfW + halfW,
+    y: -p.y * halfH + halfH,
+    behind: p.z > 1 || p.z < -1
+  };
+}
+
+function updateTVOverlayPosition() {
+  if (!tvActive || currentPhase === 3) {
+    tvScreenOverlay.style.display = 'none';
+    return;
+  }
+
+  const hw = tvScreenWidth / 2;
+  const hh = tvScreenHeight / 2;
+  const corners = [
+    new THREE.Vector3(-hw, hh, 0),
+    new THREE.Vector3(hw, hh, 0),
+    new THREE.Vector3(-hw, -hh, 0),
+    new THREE.Vector3(hw, -hh, 0)
+  ].map(c => tvScreenMesh.localToWorld(c.clone()));
+
+  const projected = corners.map(worldToScreenPoint);
+  if (projected.some(p => p.behind)) {
+    tvScreenOverlay.style.display = 'none';
+    return;
+  }
+
+  const xs = projected.map(p => p.x);
+  const ys = projected.map(p => p.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const w = maxX - minX;
+  const h = maxY - minY;
+
+  if (w < 4 || h < 4 || minX > window.innerWidth || maxX < 0 || minY > window.innerHeight || maxY < 0) {
+    tvScreenOverlay.style.display = 'none';
+    return;
+  }
+
+  tvScreenOverlay.style.display = 'block';
+  tvScreenOverlay.style.left = minX + 'px';
+  tvScreenOverlay.style.top = minY + 'px';
+  tvScreenOverlay.style.width = w + 'px';
+  tvScreenOverlay.style.height = h + 'px';
 }
 
 /* ---------------------- TV modal & video loading ---------------------- */
@@ -1709,11 +1735,10 @@ function animate() {
     updateVerticalPhysics(delta);
     updateTimer(delta);
     updateTVInteraction();
+    updateTVOverlayPosition();
 
     if (currentPhase === 2) applyPhase2Effects(t);
     else if (currentPhase === 3) renderGlitchOverlay();
-
-    tvCSSObject.visible = !(currentPhase === 3);
 
     lights.points.forEach(entry => { entry.bulb.position.copy(entry.light.position); });
 
@@ -1722,7 +1747,6 @@ function animate() {
   }
 
   renderer.render(scene, camera);
-  cssRenderer.render(cssScene, camera);
 }
 
 let poseAccumulator = 0;
